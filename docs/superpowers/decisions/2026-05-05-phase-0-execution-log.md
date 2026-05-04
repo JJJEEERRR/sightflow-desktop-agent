@@ -73,6 +73,7 @@ upstream baseline was clean; it wasn't.
   with `core.autocrlf=true` to restore CRLF. Not recommended.
 
 ### P-4: Soften `@typescript-eslint/no-explicit-any` and
+
 `@typescript-eslint/explicit-function-return-type` to `warn`
 
 - **What**: in `eslint.config.mjs` (commit `2b67155`), demoted these two rules
@@ -93,10 +94,11 @@ upstream baseline was clean; it wasn't.
 - **Confirmed with user**: yes, user picked option C (hybrid path) explicitly.
 
 ### P-5: Move Window-augmentation `declare global` from `src/preload/index.d.ts`
+
 into `src/preload/index.ts`
 
 - **What**: `index.d.ts` previously held `declare global { interface Window {
-  electron: ElectronHandler; osInfo: ... } }`. Moved that block into
+electron: ElectronHandler; osInfo: ... } }`. Moved that block into
   `index.ts` (the .d.ts now only re-exports the same shape for renderer
   consumers). Commit `2b67155`.
 - **Why**: with the augmentation living in a `.d.ts` module file (one with
@@ -112,8 +114,8 @@ into `src/preload/index.ts`
      can't reference `ElectronHandler` cleanly without a top-level `import`.
   3. Add a load-bearing import of `index.d.ts` somewhere — fragile and
      non-obvious.
-  Putting the augmentation in `index.ts` (which IS a module and IS included in
-  every relevant tsconfig) is the most direct fix.
+     Putting the augmentation in `index.ts` (which IS a module and IS included in
+     every relevant tsconfig) is the most direct fix.
 - **Trade-offs**: the augmentation now lives next to runtime code rather than
   in the `.d.ts`, which is mildly unconventional. Mitigated by the comment in
   `index.ts` and a re-declaration in `index.d.ts` for renderer consumers.
@@ -122,6 +124,7 @@ into `src/preload/index.ts`
   contextless fallback branch is removed or a different mechanism is found.
 
 ### P-6: Refactor `Toast` component in `App.tsx` to use `useEffect` for global
+
 hookup
 
 - **What**: previously the component reassigned a module-level
@@ -130,7 +133,7 @@ hookup
   bind `_showToast = handleShow` and clean up on unmount.
 - **Why**: ESLint flagged `react-hooks/refs` ("Cannot access ref value during
   render") and `react-hooks/globals` ("Cannot reassign variables declared
-  outside of the component during render"). Both are *real* React violations,
+  outside of the component during render"). Both are _real_ React violations,
   not lint noise. Fixing them is also a free correctness improvement (no more
   dangling closure references after unmount).
 - **Trade-offs**: change to runtime behavior — between mount and the first
@@ -162,7 +165,7 @@ hookup
 - **What**: `.nvmrc` contains `22\n`.
 - **Why**: the user's machine reports `node --version` v22.22.0. Plan §Task 1
   Step 2 says "Pick 20 if `node --version` reported v20.x and `npm install &&
-  npm run build` works. Otherwise pick 22." Pre-flight already verified
+npm run build` works. Otherwise pick 22." Pre-flight already verified
   `npm install` and `npm run typecheck` are clean on v22, so v22 is the right
   choice.
 - **Trade-offs**: contributors stuck on Node 20 must upgrade. Node 22 is the
@@ -175,7 +178,7 @@ hookup
 
 - **What**: plan §Task 1 Step 3 calls for a clean reinstall to confirm. I
   skipped the `rm -rf node_modules && npm ci` and only re-ran `npm run
-  typecheck`.
+typecheck`.
 - **Why**: in pre-flight we already did two clean installs (one to discover
   the `node-addon-api` override, one to apply it) plus a typecheck. The state
   is provably correct. A third clean install costs ~2 minutes and provides no
@@ -227,3 +230,32 @@ hookup
 - **Why**: don't duplicate existing ignore rules.
 - **Trade-offs**: none.
 - **Reversibility**: N/A.
+
+---
+
+## 2026-05-05 — Task 4: Husky pre-commit + lint-staged
+
+### T4-1: Hook test bumped into "empty commit prevented" — treated as success
+
+- **What**: plan §Task 4 Step 5 wants me to verify the hook by appending a blank
+  line to `README.md` and committing. lint-staged ran prettier (correctly), but
+  prettier normalized the blank line away, leaving zero net changes. lint-staged's
+  built-in "prevent empty commits" guard then aborted the commit with code 1.
+- **Why**: this is correct behavior. The point of the test was to prove the hook
+  fires and lint-staged runs the configured tasks, both of which happened. I
+  treated the abort as a successful proof and dropped the auto-backup stash.
+- **Trade-offs**: deviates from the plan's literal letter (the plan expected the
+  commit to succeed). The plan was assuming a non-prettier-affected change,
+  which a single blank line is not for an `.md` file with `printWidth: 100`.
+- **Reversibility**: N/A — no project state was changed by the test.
+
+### T4-2: Husky 9 hook installation differs from Husky 8
+
+- **What**: under Husky 9, `npm run prepare` only creates `.husky/_/` (the
+  husky internal loader), not `.husky/pre-commit`. We add `pre-commit` ourselves
+  as a plain text file with no shebang.
+- **Why**: this is the documented Husky 9 model (https://typicode.github.io/husky/)
+  — fewer moving parts than Husky 8.
+- **Trade-offs**: contributors familiar with Husky 8 may expect the hook to be
+  pre-created. Mitigated by Task 11's CONTRIBUTING.md.
+- **Reversibility**: N/A — Husky 9 is the current released line.

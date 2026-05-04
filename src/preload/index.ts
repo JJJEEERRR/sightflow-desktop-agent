@@ -1,5 +1,15 @@
 import { contextBridge, ipcRenderer } from 'electron'
 
+// Window augmentation (kept here so it activates whenever this module is included
+// in a project, not only when index.d.ts happens to be imported). The same shape
+// is also re-declared in index.d.ts for consumers that import only the .d.ts.
+declare global {
+  interface Window {
+    electron: ElectronHandler
+    osInfo: { platform: NodeJS.Platform }
+  }
+}
+
 const electronHandler = {
   invoke: (channel: string, ...args: any[]) => ipcRenderer.invoke(channel, ...args),
   on: (channel: string, callback: (...args: any[]) => void) => {
@@ -20,9 +30,8 @@ if (process.contextIsolated) {
     console.error(error)
   }
 } else {
-  // @ts-ignore
+  // Legacy fallback for non-isolated contexts. Window is augmented above.
   window.electron = electronHandler
-  // @ts-ignore
   window.osInfo = { platform: process.platform }
 }
 

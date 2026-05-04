@@ -7,6 +7,7 @@
 **Architecture:** Add tooling layers around the existing Electron/React/TS codebase. Vitest with two projects (`node` for `main`/`preload`/`core`, `jsdom` for `renderer`). GitHub Actions with three jobs: lint+typecheck (Linux), test (Windows+macOS matrix), build-verify (Windows+macOS). Husky pre-commit hooks run lint-staged. Commitlint enforces Conventional Commits.
 
 **Tech Stack:**
+
 - Vitest 1.6+ (with `@vitest/coverage-v8` and `vite-tsconfig-paths`)
 - Husky 9 + lint-staged 15
 - @commitlint/cli + @commitlint/config-conventional
@@ -41,6 +42,7 @@ After Pre-flight, every Task below assumes `cwd` is the cloned repo root.
 ## File Structure (what this plan creates / modifies)
 
 **Created files:**
+
 - `.nvmrc` — Node version lock
 - `.env.example` — non-secret config template
 - `vitest.config.ts` — Vitest config with two projects
@@ -62,11 +64,13 @@ After Pre-flight, every Task below assumes `cwd` is the cloned repo root.
 - `docs/architecture.md` — placeholder, will be filled in Phase 6
 
 **Modified files:**
+
 - `package.json` — add devDependencies, add scripts (`test`, `test:coverage`, `test:watch`, `prepare`)
 - `.gitignore` — add `coverage/` and `.env`
 - `README.md` — append a small "Development" section pointing to CONTRIBUTING.md
 
 **Untouched in this phase:**
+
 - `src/**/*` — zero changes
 - `electron-builder.yml` — zero changes
 - `electron.vite.config.ts` — zero changes
@@ -79,6 +83,7 @@ After Pre-flight, every Task below assumes `cwd` is the cloned repo root.
 ## Task 1: Lock Node version with `.nvmrc`
 
 **Files:**
+
 - Create: `.nvmrc`
 
 **Why:** so contributors and CI all use the same Node, reducing native-module rebuild surprises (robotjs).
@@ -93,6 +98,7 @@ Expected: a version like `v20.x.y` or `v22.x.y`. **Record the major** (`20` or `
 Pick `20` if `node --version` reported `v20.x` and `npm install && npm run build` works. Otherwise pick `22`. The file content is just the major version on a single line.
 
 For Node 20 (recommended default):
+
 ```
 20
 ```
@@ -100,11 +106,13 @@ For Node 20 (recommended default):
 - [ ] **Step 3: Verify by reinstalling cleanly**
 
 Run:
+
 ```bash
 rm -rf node_modules
 npm ci
 npm run typecheck
 ```
+
 Expected: typecheck passes (does not change behavior, just confirms node version is fine).
 
 - [ ] **Step 4: Commit**
@@ -119,6 +127,7 @@ git commit -m "chore: lock Node version with .nvmrc"
 ## Task 2: Install Vitest and write a smoke test that fails first
 
 **Files:**
+
 - Modify: `package.json` — add devDependencies and `test` script
 - Create: `vitest.config.ts`
 - Create: `tests/smoke.test.ts`
@@ -147,12 +156,14 @@ describe('vitest smoke', () => {
 Create empty setup files so Vitest config can reference them (they will be filled in later phases):
 
 `tests/setup.node.ts`:
+
 ```ts
 // Node-environment test setup. Intentionally empty for Phase 0.
 export {}
 ```
 
 `tests/setup.jsdom.ts`:
+
 ```ts
 // jsdom-environment test setup. Intentionally empty for Phase 0.
 export {}
@@ -166,6 +177,7 @@ Expected: `npx` either errors that `vitest` is not found, or it tries to install
 - [ ] **Step 3: Install Vitest and add scripts**
 
 Run:
+
 ```bash
 npm install --save-dev vitest@^1.6.0 @vitest/coverage-v8@^1.6.0 vite-tsconfig-paths@^4.3.2 jsdom@^24.0.0 @types/jsdom@^21.1.7
 ```
@@ -267,6 +279,7 @@ Expected: green, prints a coverage table (mostly empty), creates `coverage/` dir
 - [ ] **Step 7: Update `.gitignore`**
 
 Append to `.gitignore`:
+
 ```
 coverage/
 .env
@@ -285,6 +298,7 @@ git commit -m "test: add vitest with node+jsdom projects and smoke test"
 ## Task 3: Add `.env.example`
 
 **Files:**
+
 - Create: `.env.example`
 
 **Why:** documents non-secret runtime env knobs in source control so contributors know what's overridable.
@@ -338,6 +352,7 @@ git commit -m "chore: add .env.example documenting non-secret runtime config"
 ## Task 4: Install Husky and add pre-commit hook (lint-staged)
 
 **Files:**
+
 - Modify: `package.json` — add `prepare` script, add devDependencies
 - Create: `.lintstagedrc.json`
 - Create: `.husky/pre-commit`
@@ -345,6 +360,7 @@ git commit -m "chore: add .env.example documenting non-secret runtime config"
 - [ ] **Step 1: Install husky and lint-staged**
 
 Run:
+
 ```bash
 npm install --save-dev husky@^9.1.6 lint-staged@^15.2.10
 ```
@@ -352,6 +368,7 @@ npm install --save-dev husky@^9.1.6 lint-staged@^15.2.10
 - [ ] **Step 2: Add `prepare` script and run it**
 
 Edit `package.json` `scripts` to ADD:
+
 ```json
 {
   "scripts": {
@@ -369,13 +386,8 @@ Expected: a `.husky/` directory is created.
 
 ```json
 {
-  "*.{ts,tsx,js,jsx,mjs,cjs}": [
-    "eslint --cache --fix",
-    "prettier --write"
-  ],
-  "*.{json,yml,yaml,md,html,css}": [
-    "prettier --write"
-  ]
+  "*.{ts,tsx,js,jsx,mjs,cjs}": ["eslint --cache --fix", "prettier --write"],
+  "*.{json,yml,yaml,md,html,css}": ["prettier --write"]
 }
 ```
 
@@ -406,6 +418,7 @@ git commit -m "chore: test pre-commit hook (will revert)"
 Expected: pre-commit runs lint-staged. If `README.md` was the only staged file, prettier should format it. The commit succeeds.
 
 Now revert:
+
 ```bash
 git reset --hard HEAD~1
 ```
@@ -422,6 +435,7 @@ git commit -m "chore: add husky pre-commit running lint-staged"
 ## Task 5: Install commitlint and add commit-msg hook
 
 **Files:**
+
 - Modify: `package.json` — add devDependencies
 - Create: `commitlint.config.js`
 - Create: `.husky/commit-msg`
@@ -429,6 +443,7 @@ git commit -m "chore: add husky pre-commit running lint-staged"
 - [ ] **Step 1: Install commitlint**
 
 Run:
+
 ```bash
 npm install --save-dev @commitlint/cli@^19.5.0 @commitlint/config-conventional@^19.5.0
 ```
@@ -456,6 +471,7 @@ npx --no -- commitlint --edit $1
 ```
 
 Mark executable on macOS/Linux:
+
 ```bash
 chmod +x .husky/commit-msg
 ```
@@ -467,9 +483,11 @@ echo "" >> README.md
 git add README.md
 git commit -m "this is not a conventional commit message" || echo "REJECTED (expected)"
 ```
+
 Expected: commit fails with commitlint error. The string `REJECTED (expected)` is printed.
 
 Reset:
+
 ```bash
 git checkout README.md
 ```
@@ -481,9 +499,11 @@ echo "" >> README.md
 git add README.md
 git commit -m "chore: trigger commitlint check"
 ```
+
 Expected: commit succeeds.
 
 Revert:
+
 ```bash
 git reset --hard HEAD~1
 ```
@@ -500,6 +520,7 @@ git commit -m "chore: add commitlint with conventional config"
 ## Task 6: GitHub Actions — lint+typecheck workflow
 
 **Files:**
+
 - Create: `.github/workflows/lint-typecheck.yml`
 
 - [ ] **Step 1: Create the workflow**
@@ -567,6 +588,7 @@ Open `https://github.com/<YOUR-USERNAME>/sightflow-desktop-agent/actions`. The "
 ## Task 7: GitHub Actions — test workflow (Windows + macOS matrix)
 
 **Files:**
+
 - Create: `.github/workflows/test.yml`
 
 - [ ] **Step 1: Create the workflow**
@@ -637,6 +659,7 @@ Both `test (windows-latest)` and `test (macos-latest)` must end green. The smoke
 ## Task 8: GitHub Actions — build-verify workflow (Windows + macOS)
 
 **Files:**
+
 - Create: `.github/workflows/build-verify.yml`
 
 - [ ] **Step 1: Create the workflow**
@@ -711,6 +734,7 @@ Both must end green. `build:unpack` runs the full build but skips installer crea
 ## Task 9: Add Dependabot config
 
 **Files:**
+
 - Create: `.github/dependabot.yml`
 
 **Why:** stay on top of security patches without daily noise. Patch+minor only; major bumps will be manually reviewed.
@@ -763,6 +787,7 @@ git push
 ## Task 10: Add ADR template and the first two ADRs
 
 **Files:**
+
 - Create: `docs/adr/template.md`
 - Create: `docs/adr/0001-use-vitest-for-testing.md`
 - Create: `docs/adr/0002-keep-robotjs-with-patch-package.md`
@@ -790,12 +815,15 @@ What is the change that we're proposing or have agreed to implement?
 What becomes easier or more difficult to do because of this change?
 
 ### Positive
+
 - ...
 
 ### Negative
+
 - ...
 
 ### Neutral
+
 - ...
 
 ## Alternatives considered
@@ -827,6 +855,7 @@ The forked codebase has no automated tests, only four manual CLI smoke scripts u
 ## Decision
 
 Adopt **Vitest** with two test projects:
+
 - `node` project covers `src/main/`, `src/preload/`, `src/core/`.
 - `jsdom` project covers `src/renderer/` (React).
 
@@ -836,12 +865,14 @@ Coverage uses V8 provider via `@vitest/coverage-v8`. Path aliases come from
 ## Consequences
 
 ### Positive
+
 - Single tool, single config for all surfaces.
 - Native ESM and TS support; no Babel needed.
 - Vite ecosystem is already in use (electron-vite).
 - Fast.
 
 ### Negative
+
 - Vitest does not run Electron itself; renderer tests use jsdom, not the real
   Chromium runtime. End-to-end Electron testing is explicitly out of scope
   (see spec §3.8). Real-device smoke testing remains via existing
@@ -850,6 +881,7 @@ Coverage uses V8 provider via `@vitest/coverage-v8`. Path aliases come from
   `projects` array shape used here.
 
 ### Neutral
+
 - Coverage thresholds are 0 in Phase 0; they will be raised to ≥70% for `core/`
   in Phase 2 onwards as real tests appear.
 
@@ -893,18 +925,20 @@ will revisit the question once the anti-detection middleware is in place — if
 it turns out that humanizer-level mitigations are insufficient, switching the
 input backend becomes a Phase-3 follow-up plan, not a Phase-0 fire drill.
 
-The `humanizer` middleware introduced in Phase 3 will be the *first* line of
+The `humanizer` middleware introduced in Phase 3 will be the _first_ line of
 defense (randomized timing, jitter, bezier paths). It is designed so that
 swapping the input backend later is an isolated change inside `core/device/`.
 
 ## Consequences
 
 ### Positive
+
 - Phase 0 ships with zero risk to the existing working RPA flow.
 - The `patches/` directory documents real bugs we've already fixed; throwing
   them away would be wasteful.
 
 ### Negative
+
 - robotjs ships native binaries that need rebuilds on Node/Electron upgrades.
   Phase 0 mitigates by locking Node version (`.nvmrc`) and adding the
   `build-verify` CI workflow that rebuilds on Windows+macOS.
@@ -912,6 +946,7 @@ swapping the input backend later is an isolated change inside `core/device/`.
   flag. We accept this risk for now and rely on humanizer/circuit-breaker.
 
 ### Neutral
+
 - `patch-package` runs in `postinstall`. CI workflows that don't need native
   modules use `npm ci --ignore-scripts` plus a separate `npx patch-package`
   step (see `lint-typecheck.yml`).
@@ -937,6 +972,7 @@ git push
 ## Task 11: Add minimal CONTRIBUTING.md and architecture.md placeholder
 
 **Files:**
+
 - Create: `docs/CONTRIBUTING.md`
 - Create: `docs/architecture.md`
 - Modify: `README.md`
@@ -1022,9 +1058,11 @@ written in Phase 6 of the foundation hardening work, once the runtime/brain/
 anti-detection layers stabilize.
 
 For the design intent, see:
+
 - `docs/superpowers/specs/2026-05-05-sightflow-foundation-design.md`
 
 For specific decisions, see:
+
 - `docs/adr/`
 ```
 
@@ -1033,7 +1071,6 @@ For specific decisions, see:
 Find the existing "## 开发环境推荐配置" section in `README.md` and ADD a new section after it. Do NOT alter existing content. The new content:
 
 ```markdown
-
 ## 开发与贡献 (Development & Contributing)
 
 请参阅 [CONTRIBUTING](docs/CONTRIBUTING.md) 了解如何搭建开发环境、运行测试和提交代码。
@@ -1042,7 +1079,6 @@ Find the existing "## 开发环境推荐配置" section in `README.md` and ADD a
 
 - 设计文档：[`docs/superpowers/specs/`](docs/superpowers/specs/)
 - 架构决策记录：[`docs/adr/`](docs/adr/)
-
 ```
 
 - [ ] **Step 4: Commit**
@@ -1067,6 +1103,7 @@ This task does no edits; it only verifies the whole Phase 0 stack works together
 rm -rf node_modules
 npm ci
 ```
+
 Expected: completes without errors.
 
 - [ ] **Step 2: Run the full local quality bar**
@@ -1077,6 +1114,7 @@ npm run typecheck
 npm test
 npm run test:coverage
 ```
+
 Expected: all four pass green.
 
 - [ ] **Step 3: Sanity-check the husky hooks still trigger**
@@ -1086,6 +1124,7 @@ echo "" >> README.md
 git add README.md
 git commit -m "this should fail commitlint"
 ```
+
 Expected: commit-msg hook rejects.
 
 ```bash
@@ -1127,39 +1166,41 @@ No \`src/\` changes. Existing \`npm run dev\` / \`build:win\` / \`build:mac\` co
 
 **Spec coverage check:**
 
-| Spec §6 Phase 0 line item | Implemented in |
-|---|---|
-| Vitest + 覆盖率配置 | Task 2 |
-| GitHub Actions 三 job (lint+typecheck / test / build-verify) | Tasks 6, 7, 8 |
-| husky + lint-staged | Task 4 |
-| commitlint | Task 5 |
-| .nvmrc | Task 1 |
-| .env.example | Task 3 |
-| 基础测试骨架 (管道跑通) | Task 2 (smoke test) + Task 12 (integration check) |
+| Spec §6 Phase 0 line item                                    | Implemented in                                    |
+| ------------------------------------------------------------ | ------------------------------------------------- |
+| Vitest + 覆盖率配置                                          | Task 2                                            |
+| GitHub Actions 三 job (lint+typecheck / test / build-verify) | Tasks 6, 7, 8                                     |
+| husky + lint-staged                                          | Task 4                                            |
+| commitlint                                                   | Task 5                                            |
+| .nvmrc                                                       | Task 1                                            |
+| .env.example                                                 | Task 3                                            |
+| 基础测试骨架 (管道跑通)                                      | Task 2 (smoke test) + Task 12 (integration check) |
 
-| Spec §3.8 line item | Implemented in |
-|---|---|
-| vitest + @vitest/coverage-v8 | Task 2 |
-| 覆盖率目标 core/ ≥ 70% | NOT enforced in Phase 0 (threshold = 0). Will tighten in Phase 2+. Documented in Task 2 step 4 + ADR-0001. |
-| 单元/集成测试 | Out of scope for Phase 0 (no real logic to cover yet). |
-| E2E 暂不做 | Confirmed in ADR-0001. |
+| Spec §3.8 line item          | Implemented in                                                                                             |
+| ---------------------------- | ---------------------------------------------------------------------------------------------------------- |
+| vitest + @vitest/coverage-v8 | Task 2                                                                                                     |
+| 覆盖率目标 core/ ≥ 70%       | NOT enforced in Phase 0 (threshold = 0). Will tighten in Phase 2+. Documented in Task 2 step 4 + ADR-0001. |
+| 单元/集成测试                | Out of scope for Phase 0 (no real logic to cover yet).                                                     |
+| E2E 暂不做                   | Confirmed in ADR-0001.                                                                                     |
 
-| Spec §3.9 line item | Implemented in |
-|---|---|
-| GitHub Actions 三 job | Tasks 6-8 |
-| husky + lint-staged | Task 4 |
-| commitlint + conventional commits | Task 5 |
-| .nvmrc Node 20 LTS | Task 1 |
-| .env.example | Task 3 |
-| docs/adr/ 重要架构决策 | Tasks 10, 11 (template + 2 ADRs) |
+| Spec §3.9 line item               | Implemented in                   |
+| --------------------------------- | -------------------------------- |
+| GitHub Actions 三 job             | Tasks 6-8                        |
+| husky + lint-staged               | Task 4                           |
+| commitlint + conventional commits | Task 5                           |
+| .nvmrc Node 20 LTS                | Task 1                           |
+| .env.example                      | Task 3                           |
+| docs/adr/ 重要架构决策            | Tasks 10, 11 (template + 2 ADRs) |
 
 **Placeholder scan:**
+
 - No "TBD", "TODO", "implement later" found.
 - All commands shown verbatim.
 - All file contents shown in full.
 - One reference to "Phase 6 will fill architecture.md" — that is intentional cross-plan reference, not a placeholder for this plan.
 
 **Type/name consistency:**
+
 - Script name `test` and `test:coverage` referenced consistently in Task 2 (definition), Task 7 (CI), and Task 12 (verification).
 - Branch name `chore/phase-0-engineering-baseline` consistent in Pre-flight, Task 6, and Task 12.
 - Workflow file names match between Tasks 6, 7, 8 and Task 12 verification.

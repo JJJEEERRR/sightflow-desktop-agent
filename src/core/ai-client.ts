@@ -84,9 +84,7 @@ export class AIClient {
    * 纯文本调用（不带图片）— 用于 testConnection 等
    */
   async callText(userMessage: string): Promise<string> {
-    const data = await this.callAPI([
-      { role: 'user', content: userMessage }
-    ])
+    const data = await this.callAPI([{ role: 'user', content: userMessage }])
     return this.extractText(data)
   }
 
@@ -121,9 +119,7 @@ export class AIClient {
     imageBase64: string
   ): Promise<string> {
     const rawBase64 = this.stripBase64Prefix(imageBase64)
-    const imageUrl = rawBase64.startsWith('http')
-      ? rawBase64
-      : `data:image/png;base64,${rawBase64}`
+    const imageUrl = rawBase64.startsWith('http') ? rawBase64 : `data:image/png;base64,${rawBase64}`
 
     const data = await this.callAPI([
       { role: 'system', content: systemPrompt },

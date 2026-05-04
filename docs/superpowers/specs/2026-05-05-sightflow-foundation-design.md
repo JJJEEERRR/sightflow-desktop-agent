@@ -43,6 +43,7 @@ SightFlow Desktop Agent 是一个基于 Electron + VLM（视觉大模型）的�
 ### 1.3 本设计的目标
 
 把现有项目改造成一个**专门为长时间运行的微信自动回复 agent 设计的稳健 runtime**：
+
 - 大脑（Brain）可替换：今天是简单 VLM，明天是带记忆 + 工具调用的强 Agent
 - 反封号是一等公民（系统性中间件，每次设备调用都过）
 - 长跑稳定（watchdog + 状态机 + 自恢复 + 熔断）
@@ -208,7 +209,7 @@ src/
 ```ts
 // core/brain/types.ts
 export interface BrainContext {
-  screenshot: string                       // base64
+  screenshot: string // base64
   conversation?: {
     contactId?: string
     contactName?: string
@@ -248,16 +249,19 @@ export interface BrainMemory {
 export interface BrainTool {
   name: string
   description: string
-  schema: unknown   // zod schema
+  schema: unknown // zod schema
   execute(args: unknown): Promise<unknown>
 }
 
 // core/brain/providers/types.ts
-export interface AIMessage { role: 'system' | 'user' | 'assistant'; content: string | unknown[] }
+export interface AIMessage {
+  role: 'system' | 'user' | 'assistant'
+  content: string | unknown[]
+}
 export interface AIProvider {
   callText(messages: AIMessage[]): Promise<string>
   callVision(prompt: string, image: string): Promise<string>
-  callTool?(messages: AIMessage[], tools: BrainTool[]): Promise<ToolCall>  // 未来 ReAct 用
+  callTool?(messages: AIMessage[], tools: BrainTool[]): Promise<ToolCall> // 未来 ReAct 用
 }
 ```
 
@@ -267,7 +271,10 @@ export interface AIProvider {
 // core/brain/vlm-brain.ts
 export class VLMBrain implements AgentBrain {
   id = 'vlm-simple'
-  constructor(private provider: AIProvider, private prompts: PromptSet) {}
+  constructor(
+    private provider: AIProvider,
+    private prompts: PromptSet
+  ) {}
   async *think(ctx: BrainContext) {
     yield { kind: 'thinking', content: '分析截图...' }
     const text = await this.provider.callVision(this.prompts.reply, ctx.screenshot)
@@ -289,16 +296,19 @@ export class VLMBrain implements AgentBrain {
 由 5 个独立模块组合：
 
 #### 3.2.1 Humanizer（拟人化）
+
 - 包装 `device.click / sendMessage` 等原始操作
 - 配置项：点击前后随机延迟、坐标抖动、鼠标轨迹（bezier）、打字 CPS、标点后停顿、偶尔打错退格、偶尔长 pause、"读消息"延迟
 - 当前 engine.ts 里零散的 `sleep(150 + Math.random() * 100)` 全部抽到这里集中管理
 
 #### 3.2.2 RateLimiter（限速）
+
 - token-bucket 实现，状态持久化到 electron-store
 - 配置：全局 perHour、单联系人 perDay、最小间隔 minIntervalMs、群聊策略、新好友冷却
 - 默认值：30/h，20/contact/day，8s minInterval（**可在 UI 调**）
 
 #### 3.2.3 Schedule（工作时间窗）
+
 - 工作窗口（按周）+ 静默时段 + 随机"AFK"模拟
 - 不在窗口内时**整个进程"装睡"**：不轮询、不截图、不调 AI
 
@@ -306,13 +316,13 @@ export class VLMBrain implements AgentBrain {
 
 监控信号：
 
-| 信号 | 默认阈值 | 含义 |
-|---|---|---|
-| 连续 AI 失败 | 5 次 | 网络/key 出问题或被风控 |
-| 连续 RPA 失败 | 3 次 | 微信界面变了或被切走 |
-| 同一回复重复出现 | 3 次 | AI 卡死或被识别 |
-| 截图哈希长时间不变 | 5 分钟 | 微信被冻结或弹了登录框 |
-| 出现关键词（自定义）| 任意 | 比如截图里出现"账号异常"立即停 |
+| 信号                 | 默认阈值 | 含义                           |
+| -------------------- | -------- | ------------------------------ |
+| 连续 AI 失败         | 5 次     | 网络/key 出问题或被风控        |
+| 连续 RPA 失败        | 3 次     | 微信界面变了或被切走           |
+| 同一回复重复出现     | 3 次     | AI 卡死或被识别                |
+| 截图哈希长时间不变   | 5 分钟   | 微信被冻结或弹了登录框         |
+| 出现关键词（自定义） | 任意     | 比如截图里出现"账号异常"立即停 |
 
 熔断后 → `lifecycle.pauseForHuman(reason)`，**绝不自动重启**（重启可能加剧风险）。
 
@@ -328,6 +338,7 @@ export class AntiDetectionPolicy {
 ```
 
 **关键不变量**（设计上保证，通过 TS 类型 + module export 可见性约束）：
+
 - 所有 device 调用必须经过 `policy.beforeAction/afterAction`
 - 所有"是否要回"的决策都在 `policy.beforeReply` 之后才发生
 - 熔断后绝不自动重启
@@ -363,10 +374,10 @@ breaker open  user pause      │ resume
 
 ```ts
 export interface WatchdogOpts {
-  timeoutMs: number              // 60_000：多久没心跳算挂
-  maxRestarts: number            // 5
-  restartWindowMs: number        // 3600_000
-  cooldownMs: number             // 30_000，指数退避：30s → 1min → 2min → 4min...
+  timeoutMs: number // 60_000：多久没心跳算挂
+  maxRestarts: number // 5
+  restartWindowMs: number // 3600_000
+  cooldownMs: number // 30_000，指数退避：30s → 1min → 2min → 4min...
   onTimeout: () => Promise<'restart' | 'stop'>
 }
 ```
@@ -378,11 +389,12 @@ export interface WatchdogOpts {
 ### 3.5 Observability
 
 #### 3.5.1 Logger
+
 ```ts
 export interface LogRecord {
-  ts: string                          // ISO 8601
+  ts: string // ISO 8601
   level: 'trace' | 'debug' | 'info' | 'warn' | 'error'
-  phase: string                       // 'engine.tick' | 'brain.think' | 'device.click' ...
+  phase: string // 'engine.tick' | 'brain.think' | 'device.click' ...
   traceId: string
   msg: string
   data?: Record<string, unknown>
@@ -391,11 +403,13 @@ export interface LogRecord {
 ```
 
 三个 sink 并行：
+
 - Console（dev only，彩色）
 - JSON file（prod）：`<userData>/logs/sightflow-YYYY-MM-DD.jsonl`，按日切，最多保 30 天
 - Ring buffer（最近 1000 条在内存，UI 实时显示用）
 
 #### 3.5.2 Metrics（自实现 ~50 行）
+
 ```ts
 class Metrics {
   counter(name: string, labels?: Record<string, string>): void
@@ -409,7 +423,9 @@ class Metrics {
 `device.errors_total{op}`、`rate_limiter.rejected_total{scope}`。
 
 #### 3.5.3 Diagnostics 面板（UI）
+
 新页 `views/diagnostics.tsx`，单页展示：
+
 - 顶部：状态条（当前 lifecycle 状态、心跳、运行时长、本时段重启次数）
 - 中部：最近 1 小时核心指标
 - 底部：实时日志（按 phase / level / 关键字过滤）
@@ -462,24 +478,25 @@ class Metrics {
 
 ## 4. 错误处理与失败模式
 
-| 失败 | 处理 |
-|---|---|
-| AI HTTP 失败（网络/超时/5xx）| 单次失败：retry 2 次（指数退避）。连续 5 次：`circuit-breaker` open → pause |
-| AI 返回格式错（非预期）| 走 `kind: 'skip'`（reason='ai_invalid_format'），观测计入 metrics |
-| VLM 定位失败 | 沿用现有逻辑（清缓存 + 重新检测）；连续 3 次：breaker open |
-| `robotjs` 调用失败 | 本次 action 跳过，记录失败计数；连续多次：breaker open |
-| 截图失败（权限丢失） | logger.error + lifecycle.pauseForHuman |
-| 配置 schema 校验失败 | warn + fallback 默认值；UI 提示用户修正 |
-| Watchdog 触发 | 走重启预算逻辑；预算耗尽：fatal stop |
-| 主进程 unhandledRejection / uncaughtException | logger.error + 把当前会话日志 dump 到磁盘 + lifecycle.pauseForHuman |
-| 渲染进程异常 | ErrorBoundary 兜底，面板上展示错误详情 + 引导用户导出诊断包 |
-| 微信弹"账号异常"对话框 | breaker.observe('keyword_match', '账号异常') → 立即 pause |
+| 失败                                          | 处理                                                                        |
+| --------------------------------------------- | --------------------------------------------------------------------------- |
+| AI HTTP 失败（网络/超时/5xx）                 | 单次失败：retry 2 次（指数退避）。连续 5 次：`circuit-breaker` open → pause |
+| AI 返回格式错（非预期）                       | 走 `kind: 'skip'`（reason='ai_invalid_format'），观测计入 metrics           |
+| VLM 定位失败                                  | 沿用现有逻辑（清缓存 + 重新检测）；连续 3 次：breaker open                  |
+| `robotjs` 调用失败                            | 本次 action 跳过，记录失败计数；连续多次：breaker open                      |
+| 截图失败（权限丢失）                          | logger.error + lifecycle.pauseForHuman                                      |
+| 配置 schema 校验失败                          | warn + fallback 默认值；UI 提示用户修正                                     |
+| Watchdog 触发                                 | 走重启预算逻辑；预算耗尽：fatal stop                                        |
+| 主进程 unhandledRejection / uncaughtException | logger.error + 把当前会话日志 dump 到磁盘 + lifecycle.pauseForHuman         |
+| 渲染进程异常                                  | ErrorBoundary 兜底，面板上展示错误详情 + 引导用户导出诊断包                 |
+| 微信弹"账号异常"对话框                        | breaker.observe('keyword_match', '账号异常') → 立即 pause                   |
 
 ---
 
 ## 5. 安全模型
 
 威胁模型（聚焦自用、不给他人装）：
+
 - T1：API Key 被本机其他进程读取 → 用 OS keychain（mitigate）
 - T2：恶意 IPC 调用绕过校验 → preload 白名单 + zod schema 校验（mitigate）
 - T3：渲染进程被 XSS（理论上不会，无远端内容） → contextIsolation + sandbox + CSP（defense in depth）
@@ -487,6 +504,7 @@ class Metrics {
 - T5：诊断包导出泄露隐私 → 导出时强制脱敏 + 显式确认
 
 非目标：
+
 - 不防本地文件系统访问（自用，OS 用户已经是信任边界）
 - 不防硬件层攻击
 
@@ -561,16 +579,17 @@ review 和回滚。
 
 ## 8. 风险与开放问题
 
-| 风险 | 缓解 |
-|---|---|
-| robotjs 在 Electron 39 的兼容问题（已用 patch-package）| Phase 0 验证现有 patch 仍有效 + 写 ADR 记录 |
-| keytar 在 Windows 老版本可能装不上 | 第一次启动失败时 fallback 到 electron-store + 显著告警 |
-| 火山方舟 API 变动（私有 thinking 字段等）| openai-compat provider 只用最小公约协议；火山特殊参数走可选配置 |
-| 反封号策略默认值的合理性（30/h 等）| 默认值偏保守；UI 给"建议预设"（保守 / 平衡 / 激进）；保留可观测性以便用户根据实际数据调 |
-| 7×24 跑期间机器睡眠 | Phase 1 加入 `powerSaveBlocker`（仅在 lifecycle 处于 `running` 时阻止系统睡眠；进入静默窗口或 paused 状态自动释放） |
-| Electron 版本升级带来的破坏 | Phase 6 之后冻结依赖版本；用 renovate 手动 review |
+| 风险                                                    | 缓解                                                                                                                |
+| ------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------- |
+| robotjs 在 Electron 39 的兼容问题（已用 patch-package） | Phase 0 验证现有 patch 仍有效 + 写 ADR 记录                                                                         |
+| keytar 在 Windows 老版本可能装不上                      | 第一次启动失败时 fallback 到 electron-store + 显著告警                                                              |
+| 火山方舟 API 变动（私有 thinking 字段等）               | openai-compat provider 只用最小公约协议；火山特殊参数走可选配置                                                     |
+| 反封号策略默认值的合理性（30/h 等）                     | 默认值偏保守；UI 给"建议预设"（保守 / 平衡 / 激进）；保留可观测性以便用户根据实际数据调                             |
+| 7×24 跑期间机器睡眠                                     | Phase 1 加入 `powerSaveBlocker`（仅在 lifecycle 处于 `running` 时阻止系统睡眠；进入静默窗口或 paused 状态自动释放） |
+| Electron 版本升级带来的破坏                             | Phase 6 之后冻结依赖版本；用 renovate 手动 review                                                                   |
 
 开放问题（Phase 之间根据实际情况决策）：
+
 - **是否引入 OCR**：当前 brain context 不放 ocrText（删除现有未用字段）。如果 Phase 2-3
   发现 brain 决策需要更多结构化文本信息，再作为 BrainTool 加回。
 - **memory 用什么后端**：Phase 2 先不实现 BrainMemory（接口预留 + null 实现）。
@@ -596,6 +615,7 @@ review 和回滚。
 ## 10. 后续（不在本设计范围）
 
 为"未来加更强大的 Agent AI"留的钩子（**仅设计上预留，不实现**）：
+
 - `BrainMemory` 接口（持久化对话历史 / 工作记忆）
 - `BrainTool` 接口（工具调用，比如查知识库 / 调外部 API / 查日历）
 - `AIProvider.callTool` 可选方法（function calling）

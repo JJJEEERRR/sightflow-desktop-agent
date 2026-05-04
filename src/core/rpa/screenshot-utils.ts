@@ -33,7 +33,12 @@ function getScreenshotCacheKey(
   return `${displayId}-${getCropHash(crop)}`
 }
 
-export function getChatContactAvatarBounds(): { x: number; y: number; width: number; height: number } {
+export function getChatContactAvatarBounds(): {
+  x: number
+  y: number
+  width: number
+  height: number
+} {
   if (IS_MAC) {
     return { x: 72, y: 64, width: 46, height: 68 }
   }
@@ -44,15 +49,25 @@ export const takeWeChatScreenshot = async ({ wechatType = 'weixin' }: { wechatTy
   try {
     const windowInfo = await getWindowInfo(wechatType, true)
     if (!windowInfo) return { success: false, error: '未找到应用窗口' }
-    return { success: true, screenshot: windowInfo.screenshot, bounds: windowInfo.bounds, scaleFactor: windowInfo.scaleFactor }
+    return {
+      success: true,
+      screenshot: windowInfo.screenshot,
+      bounds: windowInfo.bounds,
+      scaleFactor: windowInfo.scaleFactor
+    }
   } catch (error: any) {
     return { success: false, error: error.message }
   }
 }
 
-export async function calculateRedDotPercentage(base64Image: string, onlyFirstQuadrant: boolean = false): Promise<number | null> {
+export async function calculateRedDotPercentage(
+  base64Image: string,
+  onlyFirstQuadrant: boolean = false
+): Promise<number | null> {
   try {
-    const image = await Jimp.read(Buffer.from(base64Image.replace(/^data:image\/\w+;base64,/, ''), 'base64'))
+    const image = await Jimp.read(
+      Buffer.from(base64Image.replace(/^data:image\/\w+;base64,/, ''), 'base64')
+    )
     const { width, height } = image.bitmap
     const totalPixels = width * height
     if (totalPixels === 0) return null
@@ -70,7 +85,7 @@ export async function calculateRedDotPercentage(base64Image: string, onlyFirstQu
       }
     }
     return (redPixelCount / totalPixels) * 100
-  } catch (error) {
+  } catch {
     return null
   }
 }
@@ -83,14 +98,26 @@ export async function captureWechatWindow(
     const windowCoreResult = await getWechatWindowInfo(appType)
     if (!windowCoreResult) return { success: false, error: '未找到窗口' }
 
-    const { display, bounds, display: { scaleFactor } } = windowCoreResult
+    const {
+      display,
+      bounds,
+      display: { scaleFactor }
+    } = windowCoreResult
     const cacheKey = getScreenshotCacheKey(display.id, crop)
 
     const cached = screenshotCache.get(cacheKey)
     const now = Date.now()
     if (cached && now - cached.timestamp < SCREENSHOT_CACHE_DURATION) {
-      const resultBounds = crop ? { x: bounds.x + crop.x, y: bounds.y + crop.y, width: crop.width, height: crop.height } : bounds
-      return { success: true, screenshotBase64: cached.screenshotBase64, bounds: resultBounds, display: cached.display, timestamp: Date.now() }
+      const resultBounds = crop
+        ? { x: bounds.x + crop.x, y: bounds.y + crop.y, width: crop.width, height: crop.height }
+        : bounds
+      return {
+        success: true,
+        screenshotBase64: cached.screenshotBase64,
+        bounds: resultBounds,
+        display: cached.display,
+        timestamp: Date.now()
+      }
     }
 
     const capturePromise = (async (): Promise<ScreenshotCache | null> => {
@@ -103,15 +130,16 @@ export async function captureWechatWindow(
           setTimeout(() => reject(new Error('desktopCapturer timeout')), 5000)
         })
 
-        const screenSources = await Promise.race([
+        const screenSources = (await Promise.race([
           desktopCapturer.getSources({
             types: ['screen'],
             thumbnailSize: { width: physicalWidth, height: physicalHeight }
           }),
           timeoutPromise
-        ]) as Electron.DesktopCapturerSource[]
+        ])) as Electron.DesktopCapturerSource[]
 
-        const matchedScreenSource = screenSources.find(s => String(s.display_id) === String(display.id)) || screenSources[0]
+        const matchedScreenSource =
+          screenSources.find((s) => String(s.display_id) === String(display.id)) || screenSources[0]
         if (!matchedScreenSource) return null
 
         let cropRect = {
@@ -139,7 +167,9 @@ export async function captureWechatWindow(
         const croppedNativeImage = matchedScreenSource.thumbnail.crop(cropRect)
         const croppedScreenshot = croppedNativeImage.toDataURL()
 
-        const resultBounds = crop ? { x: bounds.x + crop.x, y: bounds.y + crop.y, width: crop.width, height: crop.height } : bounds
+        const resultBounds = crop
+          ? { x: bounds.x + crop.x, y: bounds.y + crop.y, width: crop.width, height: crop.height }
+          : bounds
         const cacheResult: ScreenshotCache = {
           screenshotBase64: croppedScreenshot,
           nativeImage: croppedNativeImage,
@@ -161,8 +191,14 @@ export async function captureWechatWindow(
     const captureResult = await capturePromise
 
     if (!captureResult) return { success: false, error: '截图失败', display }
-    
-    return { success: true, screenshotBase64: captureResult.screenshotBase64, nativeImage: captureResult.nativeImage, bounds: captureResult.bounds, display: captureResult.display }
+
+    return {
+      success: true,
+      screenshotBase64: captureResult.screenshotBase64,
+      nativeImage: captureResult.nativeImage,
+      bounds: captureResult.bounds,
+      display: captureResult.display
+    }
   } catch (err: any) {
     return { success: false, error: err.message }
   }
@@ -174,9 +210,7 @@ export async function captureWechatWindow(
  * 从 LayoutCache 获取 chatMainArea.bbox → 计算 crop 区域 → 局部截图
  * 用于 diff 检测：对比前后两张 chatMainArea 截图判断是否有新消息
  */
-export async function captureChatMainArea(
-  appType: AppType
-): Promise<Electron.NativeImage | null> {
+export async function captureChatMainArea(appType: AppType): Promise<Electron.NativeImage | null> {
   try {
     // 延迟导入避免循环引用
     const { getLayoutCache, bboxToCropBounds } = await import('./vision-utils')

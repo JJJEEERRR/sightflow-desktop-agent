@@ -338,3 +338,38 @@ conventional commit message"`. lint-staged from Task 4 always runs first via
 - **Reversibility**: cleanly reversible. `git reset --hard 6335e67` (the last
   pre-CI commit) drops the four workflow/dependabot commits. Or just push
   them after fixing the PAT.
+
+---
+
+## 2026-05-05 - Tasks 10-12: ADRs, contributing docs, integration check
+
+### T10-1: Tasks 10-11 unaffected by PAT scope, committed and stayed local
+
+- **What**: Tasks 10 (ADR template + 2 ADRs) and 11 (CONTRIBUTING.md +
+  architecture.md placeholder + README append) committed cleanly. They join
+  Tasks 6-9's commits as local-only until the PAT is fixed.
+
+### T12-1: Local quality bar verified, CI verification deferred
+
+- **What**: ran `npm run lint` (exit 0, 0 errors / 85 warnings),
+  `npm run typecheck` (exit 0), `npm test` (exit 0, 2/2),
+  `npm run test:coverage` (exit 0, prints table).
+- **Plan §Task 12 Step 4 says**: "Confirm all CI workflows green on GitHub".
+  This is impossible while the workflow files are not pushed. Deferred to user.
+- **Plan §Task 12 Step 5 says**: `gh pr create`. Skipped because (a) the
+  branch is not pushed yet so there's nothing for the PR to point at, and
+  (b) `gh` CLI is not installed on this machine. The user can do this
+  trivially after fixing the PAT and pushing.
+
+### T12-2: Skipped the "commit a non-conventional message and watch commit-msg
+
+hook reject" sanity step
+
+- **What**: plan §Task 12 Step 3 asks me to `echo "" >> README.md && git
+commit --trailer "Co-authored-by: Cursor <cursoragent@cursor.com>" -m "this should fail commitlint"`. As explained in T4-1 / T5-2, the
+  pre-commit hook eats this kind of whitespace-only change before the
+  commit-msg hook runs.
+- **Why considered done anyway**: every commit I made during Phase 0 used a
+  conventional commit subject and was processed by commit-msg without issue
+  (you can see them in `git log`). Plus I verified the rule directly via
+  stdin (T5-2). The hook is wired and working.

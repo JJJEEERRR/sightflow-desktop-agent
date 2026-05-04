@@ -185,3 +185,45 @@ hookup
   by `nvm`, `actions/setup-node`, and `volta` — not by `npm ci`. Safe to skip.
 - **Reversibility**: rerun `rm -rf node_modules; npm ci; npm run typecheck`
   before merging the PR if any concern.
+
+---
+
+## 2026-05-05 — Task 2: Vitest with `node` and `jsdom` projects + smoke test
+
+### T2-1: Pin `vitest@^1.6.0` despite latest being `4.1.5`
+
+- **What**: installed `vitest@^1.6.1`, `@vitest/coverage-v8@^1.6.1`,
+  `vite-tsconfig-paths@^4.3.2`, `jsdom@^24.1.3`, `@types/jsdom@^21.1.7`.
+- **Why**: the plan was authored against vitest 1.6 and uses the
+  `defineConfig({ test: { projects: [{ test: { name, environment, include } }] } })`
+  shape, which the 1.x line supports. Vitest 3+ moved to a top-level `projects:`
+  field; vitest 4 also tightens config validation. Adopting a different shape
+  would constitute a deviation from the plan that needs review.
+- **Trade-offs**: vitest 1.x is from 2024-Q1 and may have CVE issues by 2026.
+  Mitigated by Dependabot (Task 9) which will surface minor/patch upgrades
+  weekly. Major bumps (1→2 / 2→3 / 3→4) will need a deliberate PR to migrate the
+  config shape.
+- **Reversibility**: a future "deps: upgrade vitest to ^4" PR is straightforward.
+
+### T2-2: Skip the literal "fail first" verification step
+
+- **What**: plan §Task 2 Step 2 says to run `npx vitest run tests/smoke.test.ts`
+  before installing vitest, expecting failure. I did run it; npx auto-installed
+  vitest@4.1.5 in the npx cache (not in `node_modules`) and the test passed
+  with exit 0.
+- **Why**: TDD red-light step is symbolic when the runner is downloaded on
+  demand. The intent — "vitest didn't accidentally come pre-installed and the
+  test wasn't a no-op" — is satisfied because the test is actually exercising
+  `process` and arithmetic.
+- **Trade-offs**: minor deviation from the plan's literal letter; no impact on
+  the resulting code or tests.
+- **Reversibility**: N/A — no code change to revert.
+
+### T2-3: Only add `coverage` to `.gitignore`, not `.env`/`.env.local`
+
+- **What**: plan §Task 2 Step 7 lists `coverage/`, `.env`, `.env.local` as new
+  entries. Only `coverage` was missing; `.env`, `.env.*`, plus `!.env.example`
+  were already in upstream's `.gitignore`.
+- **Why**: don't duplicate existing ignore rules.
+- **Trade-offs**: none.
+- **Reversibility**: N/A.

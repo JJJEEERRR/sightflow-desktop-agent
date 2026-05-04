@@ -56,3 +56,12 @@ npm run build:mac
 ## 开发环境推荐配置
 
 - [VSCode](https://code.visualstudio.com/) + [ESLint](https://marketplace.visualstudio.com/items?itemName=dbaeumer.vscode-eslint) + [Prettier](https://marketplace.visualstudio.com/items?itemName=esbenp.prettier-vscode)
+
+## 开发与贡献 (Development & Contributing)
+
+请参阅 [CONTRIBUTING](docs/CONTRIBUTING.md) 了解如何搭建开发环境、运行测试和提交代码。
+
+构架与重要决策：
+
+- 设计文档：[`docs/superpowers/specs/`](docs/superpowers/specs/)
+- 架构决策记录：[`docs/adr/`](docs/adr/)

@@ -259,3 +259,37 @@ typecheck`.
 - **Trade-offs**: contributors familiar with Husky 8 may expect the hook to be
   pre-created. Mitigated by Task 11's CONTRIBUTING.md.
 - **Reversibility**: N/A — Husky 9 is the current released line.
+
+---
+
+## 2026-05-05 — Task 5: Commitlint commit-msg hook
+
+### T5-1: Use `commitlint.config.mjs` (not `.js`) to avoid Node 22 ESM warning
+
+- **What**: the plan specified `commitlint.config.js` with `export default { ... }`
+  (ES module syntax). On Node 22 (locked via `.nvmrc`), running this file emits
+  `[MODULE_TYPELESS_PACKAGE_JSON] Warning: Module type of file:... is not specified
+and it doesn't parse as CommonJS. Reparsing as ES module ...`. Renamed to
+  `.mjs`. commitlint's cosmiconfig locator finds either extension.
+- **Why**: silences a recurring noisy warning every time commitlint runs.
+- **Trade-offs**: the file extension differs from the plan's literal text.
+  Trivial divergence.
+- **Reversibility**: rename back if plan compliance becomes important; the
+  warning would return.
+
+### T5-2: commitlint smoke test done via stdin, not the README-trick from plan
+
+- **What**: plan §Task 5 Step 4 wants me to verify commitlint by appending a
+  blank line to `README.md`, staging, and trying `git commit -m "this is not a
+conventional commit message"`. lint-staged from Task 4 always runs first via
+  pre-commit, sees only a whitespace change, prettier-normalizes it, and
+  aborts as an empty commit (same as T4-1) before commit-msg ever fires.
+- **Why**: tested commitlint directly:
+  - `echo "bad" | npx commitlint` → exit 1, "subject may not be empty"
+  - `echo "chore: ..." | npx commitlint` → exit 0
+  - This proves the rules are loaded and enforced. The full git+husky end-to-end
+    path was already proven by Task 4's pre-commit run.
+- **Trade-offs**: no end-to-end smoke from `git commit` itself for commit-msg.
+  Mitigated by Task 12's integration check, which deliberately makes a non-
+  blank change to `README.md` to exercise both hooks together.
+- **Reversibility**: N/A.

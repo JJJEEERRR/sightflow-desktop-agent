@@ -293,3 +293,48 @@ conventional commit message"`. lint-staged from Task 4 always runs first via
   Mitigated by Task 12's integration check, which deliberately makes a non-
   blank change to `README.md` to exercise both hooks together.
 - **Reversibility**: N/A.
+
+---
+
+## 2026-05-05 — Tasks 6-9: CI workflows + Dependabot (PAT scope blocker)
+
+### T6-9-1: Local commits made, push BLOCKED by missing `workflow` scope on PAT
+
+- **What**: created .github/workflows/lint-typecheck.yml,
+  .github/workflows/test.yml, .github/workflows/build-verify.yml, and
+  .github/dependabot.yml exactly as the plan specifies. Each commit landed
+  locally on `chore/phase-0-engineering-baseline`. Attempted `git push` and got:
+
+  ```
+  ! [remote rejected] chore/phase-0-engineering-baseline -> chore/phase-0-engineering-baseline
+    (refusing to allow a Personal Access Token to create or update workflow
+     `.github/workflows/build-verify.yml` without `workflow` scope)
+  ```
+
+- **Why blocked**: the user's PAT (provided pre-flight) is a _fine-grained_ PAT
+  with repository contents read/write access but **not** the `workflow`
+  scope. GitHub's REST API requires the `workflow` scope to push files under
+  `.github/workflows/`. The fine-grained equivalent is **Actions: Read and
+  write** in the repository permissions panel.
+
+- **What I did instead**: continued Tasks 10-12 (which do NOT touch
+  `.github/workflows/`). Local commits remain on the branch; once the user
+  rotates/expands the PAT, `git push` will succeed.
+
+- **Action item for the user when waking up**:
+  1. Open https://github.com/settings/personal-access-tokens and find the PAT.
+  2. Edit the fine-grained PAT and add **Actions** -> **Read and write** under
+     "Repository permissions". OR: regenerate as a classic PAT with `repo` +
+     `workflow` scopes.
+  3. Update `.git/.git-credentials` with the new token (same format).
+  4. `git push` will then accept the four commits already sitting on the
+     branch.
+
+- **Trade-offs**: until pushed, the workflows obviously don't run on GitHub.
+  No CI gating yet. Local lint/typecheck/test still gate via husky + manual
+  `npm test`. Phase 0 acceptance criteria explicitly require "all three CI
+  workflows green on GitHub" -- that step is deferred until the user can push.
+
+- **Reversibility**: cleanly reversible. `git reset --hard 6335e67` (the last
+  pre-CI commit) drops the four workflow/dependabot commits. Or just push
+  them after fixing the PAT.

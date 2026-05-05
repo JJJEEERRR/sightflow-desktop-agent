@@ -19,6 +19,13 @@ import {
 } from '../core/observability'
 import { Lifecycle, Watchdog } from '../core/runtime'
 import type { LifecycleEvent, LifecycleSnapshot } from '../core/runtime'
+import {
+  AntiDetectionPolicy,
+  defaultAntiDetectionConfig,
+  parseAntiDetectionConfig,
+  type AntiDetectionConfig,
+  type KvStorage
+} from '../core/policy'
 
 // `electron-store` ships both CJS and ESM bundles; in some bundlers the import
 // arrives as `{ default: Store }`, in others as `Store` directly. This handles
@@ -29,6 +36,24 @@ const settingsStore = new StoreClass({
   name: 'settings',
   defaults: { apiKey: '', model: '', baseURL: '', systemPrompt: '', locale: 'zh' }
 })
+
+// Separate store for runtime policy state (rate-limiter counters, etc.). Kept
+// distinct from `settings` so user-edited config and engine-managed state
+// don't conflict, and so a settings reset won't blow away rate-limiter
+// history (a real risk if the user just wanted to change the API key).
+const policyStateStore = new StoreClass({
+  name: 'policy-state',
+  defaults: {}
+})
+
+const policyKvStorage: KvStorage = {
+  get<T>(key: string): T | undefined {
+    return policyStateStore.get(key) as T | undefined
+  },
+  set(key: string, value: unknown): void {
+    policyStateStore.set(key, value)
+  }
+}
 
 interface EngineStartConfig {
   apiKey: string
@@ -47,6 +72,10 @@ let unsubscribeLifecycle: (() => void) | null = null
 // agent loop crashes and is rebuilt.
 let sharedLifecycle: Lifecycle | null = null
 let watchdog: Watchdog | null = null
+// Anti-detection policy is also one-per-session and survives engine rebuilds
+// (rate-limiter counters, breaker state must NOT reset across watchdog
+// restarts — that's the whole point of the breaker).
+let currentPolicy: AntiDetectionPolicy | null = null
 
 // ── Observability boot ─────────────────────────────────────────────────────
 // Constructed at module load so anything that runs before app.whenReady() is
@@ -183,6 +212,24 @@ app.whenReady().then(async () => {
       // budget accumulates correctly.
       sharedLifecycle = new Lifecycle()
 
+      // Build the anti-detection policy from persisted settings. parseAntiDetectionConfig
+      // tolerates undefined / partial input by falling back to defaults; if the
+      // user has never opened the settings page yet the resulting config is
+      // entirely default. The policy survives engine rebuilds (see comment on
+      // `currentPolicy`).
+      const persistedAd = settingsStore.get('antiDetection') as unknown
+      let parsedAd: AntiDetectionConfig
+      try {
+        parsedAd = parseAntiDetectionConfig(persistedAd ?? {})
+      } catch (err) {
+        log.warn('Persisted antiDetection config invalid; falling back to defaults', { err })
+        parsedAd = defaultAntiDetectionConfig()
+      }
+      currentPolicy = new AntiDetectionPolicy({
+        config: parsedAd,
+        storage: policyKvStorage
+      })
+
       const mainWindow = BrowserWindow.getAllWindows()[0]
       const onLog = (type: string, content: string): void => {
         if (mainWindow && !mainWindow.isDestroyed()) {
@@ -198,7 +245,14 @@ app.whenReady().then(async () => {
         const device = new RPADevice()
         device.setAppType(config.appType || 'weixin')
         device.setApiKey(config.apiKey)
-        const e = new Engine(currentBrain!, device, localHooks, onLog, sharedLifecycle!)
+        const e = new Engine(
+          currentBrain!,
+          device,
+          localHooks,
+          onLog,
+          sharedLifecycle!,
+          currentPolicy ?? undefined
+        )
         e.setAppType(config.appType || 'weixin')
         return e
       }
@@ -306,6 +360,62 @@ app.whenReady().then(async () => {
 
   ipcMain.handle('engine:status', async () => {
     return { running: engine?.isRunning() ?? false }
+  })
+
+  // ── Anti-detection policy IPC ────────────────────────────────────────────
+  // Renderer fetches the current config (or default if unset) and pushes
+  // patches. All input is zod-validated; an invalid patch returns an error
+  // instead of corrupting persisted state. snapshot exposes counters/state
+  // for the future settings + diagnostics surfaces.
+
+  ipcMain.handle('policy:get', async (): Promise<AntiDetectionConfig> => {
+    if (currentPolicy) return currentPolicy.getConfig()
+    const persisted = settingsStore.get('antiDetection') as unknown
+    try {
+      return parseAntiDetectionConfig(persisted ?? {})
+    } catch {
+      return defaultAntiDetectionConfig()
+    }
+  })
+
+  ipcMain.handle(
+    'policy:set',
+    async (
+      _event,
+      patch: unknown
+    ): Promise<
+      { success: true; config: AntiDetectionConfig } | { success: false; error: string }
+    > => {
+      try {
+        // Merge against the current effective config so callers can send
+        // partial patches (e.g. only humanizer fields) without nuking the rest.
+        const current =
+          currentPolicy?.getConfig() ??
+          parseAntiDetectionConfig((settingsStore.get('antiDetection') as unknown) ?? {})
+        const merged = parseAntiDetectionConfig({
+          ...current,
+          ...((patch ?? {}) as Partial<AntiDetectionConfig>)
+        })
+        settingsStore.set('antiDetection', merged)
+        currentPolicy?.updateConfig(merged)
+        log.info('policy config updated', {})
+        return { success: true, config: merged }
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err)
+        log.warn('policy:set rejected', { err: message })
+        return { success: false, error: message }
+      }
+    }
+  )
+
+  ipcMain.handle('policy:snapshot', async () => {
+    return currentPolicy?.snapshot() ?? null
+  })
+
+  // Used by the future "user resumes from circuit-break pause" flow. Idempotent.
+  ipcMain.handle('policy:resetBreaker', async () => {
+    currentPolicy?.resetBreaker()
+    return { success: true }
   })
 
   // Returns the latest lifecycle snapshot. Renderer can poll this on connect

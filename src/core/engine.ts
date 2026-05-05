@@ -15,6 +15,7 @@ import { DesktopDevice } from './device'
 import { getLogger, newTraceId, type Logger } from './observability'
 import { Lifecycle, type LifecycleState } from './runtime'
 import type { AgentBrain, BrainContext, BrainDecision } from './brain'
+import type { AntiDetectionPolicy } from './policy'
 import type { AppType } from './rpa/types'
 
 export class Engine {
@@ -29,13 +30,20 @@ export class Engine {
    * Phase 2 constructor signature: `brain` is the decision-making component
    * (replaces the former `hooks.getReply`). `hooks` is now optional and only
    * carries lifecycle/error/external-trigger callbacks.
+   *
+   * Phase 3 adds an optional `policy` that the engine consults before every
+   * tick (rate-limit, schedule window, circuit breaker) and around every
+   * device action (humanizer pre/post delays, jitter, breaker observation).
+   * The argument is optional so existing tests and the Phase-2 code path keep
+   * working unchanged.
    */
   constructor(
     private brain: AgentBrain,
     private device: DesktopDevice,
     private hooks: AgentHooks = {},
     private onLog?: (type: string, content: string) => void,
-    lifecycle?: Lifecycle
+    lifecycle?: Lifecycle,
+    private policy?: AntiDetectionPolicy
   ) {
     this.lifecycle = lifecycle ?? new Lifecycle()
     this.log = getLogger('engine')
@@ -190,6 +198,29 @@ export class Engine {
    *   - 维护 chatMainArea diff baseline
    */
   private async processCurrentChat(): Promise<void> {
+    // ── Phase 3: anti-detection gate ────────────────────────────────────
+    if (this.policy) {
+      const gate = await this.policy.beforeReply()
+      if (!gate.proceed) {
+        if (gate.pause) {
+          // Circuit breaker tripped — pause the lifecycle and exit the loop.
+          // The user must explicitly resume; the watchdog never auto-recovers
+          // a 'paused' state, only 'crashed'.
+          this.emitLog('skip', `策略拒绝执行（${gate.reason}），暂停引擎：${gate.pause.detail}`)
+          if (this.lifecycle.getState() === 'running') {
+            this.lifecycle.pause(gate.pause.reason)
+          }
+          this.running = false
+          return
+        }
+        // Soft block (rate-limit, schedule out-of-window). Sleep and skip
+        // this tick; the next loop iteration re-evaluates.
+        this.emitLog('skip', `策略稍后再试（${gate.reason}），等待 ${gate.waitMs}ms`)
+        await this.cancellableSleep(gate.waitMs)
+        return
+      }
+    }
+
     const screenshot = await this.device.screenshot()
     this.emitLog('thinking', '截图完成，请求 AI 分析...')
 
@@ -199,14 +230,23 @@ export class Engine {
       traceId: this.currentTraceId
     }
 
-    for await (const stream of this.brain.decide(ctx)) {
-      if (!this.running) break
-      if (stream.thinking) {
-        this.emitLog('thinking', stream.thinking)
+    let sawDecision = false
+    try {
+      for await (const stream of this.brain.decide(ctx)) {
+        if (!this.running) break
+        if (stream.thinking) {
+          this.emitLog('thinking', stream.thinking)
+        }
+        if (stream.decision) {
+          sawDecision = true
+          await this.executeDecision(stream.decision)
+        }
       }
-      if (stream.decision) {
-        await this.executeDecision(stream.decision)
-      }
+      if (sawDecision) this.policy?.observe({ type: 'aiSuccess' })
+    } catch (err) {
+      const e = err instanceof Error ? err : new Error(String(err))
+      this.policy?.observe({ type: 'aiFailure', err: e })
+      throw e
     }
 
     if (this.running) {
@@ -372,13 +412,29 @@ export class Engine {
   private async executeDecision(decision: BrainDecision): Promise<void> {
     try {
       switch (decision.type) {
-        case 'reply':
+        case 'reply': {
           this.emitLog('reply', `[回复] ${decision.text}`)
-          await this.device.sendMessage(decision.text)
+          // Phase 3: pre-action humanizer delay (no jitter for a text send).
+          await this.policy?.beforeAction({ type: 'reply', text: decision.text })
+          let success = false
+          let actionErr: Error | undefined
+          try {
+            await this.device.sendMessage(decision.text)
+            success = true
+          } catch (sendErr) {
+            actionErr = sendErr instanceof Error ? sendErr : new Error(String(sendErr))
+            throw actionErr
+          } finally {
+            await this.policy?.afterAction(
+              { type: 'reply', text: decision.text },
+              { success, err: actionErr }
+            )
+          }
           this.hooks.onActionComplete?.({ type: 'text', content: decision.text } as ActionItem, {
             success: true
           })
           break
+        }
         case 'skip':
           this.emitLog('skip', decision.reason ? `跳过：${decision.reason}` : '跳过回复')
           break
@@ -405,5 +461,19 @@ export class Engine {
 
   private sleep(ms: number): Promise<void> {
     return new Promise((resolve) => setTimeout(resolve, ms))
+  }
+
+  /**
+   * Sleep that wakes early when `this.running` flips to false. Used by the
+   * Phase-3 policy gate so a long schedule-out-of-window wait can be
+   * interrupted promptly when the user clicks stop.
+   */
+  private async cancellableSleep(ms: number): Promise<void> {
+    const slice = 500
+    const start = Date.now()
+    while (this.running && Date.now() - start < ms) {
+      const remaining = ms - (Date.now() - start)
+      await this.sleep(Math.min(slice, Math.max(0, remaining)))
+    }
   }
 }

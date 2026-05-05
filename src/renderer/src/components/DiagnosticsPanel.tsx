@@ -36,6 +36,7 @@ export function DiagnosticsPanel({ onToast }: DiagnosticsPanelProps): JSX.Elemen
   const [transitions, setTransitions] = useState<LifecycleEvent[]>([])
   const [levelFilter, setLevelFilter] = useState<LogLevel | 'all'>('all')
   const [phaseFilter, setPhaseFilter] = useState<string>('all')
+  const [isExporting, setIsExporting] = useState<boolean>(false)
 
   const logStreamRef = useRef<HTMLDivElement>(null)
 
@@ -117,15 +118,43 @@ export function DiagnosticsPanel({ onToast }: DiagnosticsPanelProps): JSX.Elemen
       transitions,
       logs
     }
+    const filename = `sightflow-diagnostics-${Date.now()}.json`
     const blob = new Blob([JSON.stringify(bundle, null, 2)], { type: 'application/json' })
     const url = URL.createObjectURL(blob)
     const a = document.createElement('a')
     a.href = url
-    a.download = `sightflow-diagnostics-${Date.now()}.json`
+    a.download = filename
     a.click()
     setTimeout(() => URL.revokeObjectURL(url), 0)
-    onToast?.(t('diag.export.success'), 'success')
+    // Mirrors the IPC button's "<phrase>: <destination>" pattern so both
+    // local-Blob and main-process zip exports read consistently.
+    onToast?.(`${t('diag.export.success')}: ${filename}`, 'success')
   }, [logs, snapshot, transitions, onToast])
+
+  // Triggers the main-side `diag:export` handler (Track A) which writes a zip
+  // to disk containing logs + config + state snapshot. The renderer never
+  // touches the filesystem; we just surface the resulting path/error via toast.
+  const handleIpcExport = useCallback(async (): Promise<void> => {
+    if (isExporting) return
+    setIsExporting(true)
+    try {
+      const result = await window.electron?.invoke<
+        { success: true; path: string; sizeBytes: number } | { success: false; error: string }
+      >('diag:export', { includeLogs: true, daysBack: 14 })
+      if (result?.success === true) {
+        onToast?.(`${t('diag.export.success')}: ${result.path}`, 'success')
+      } else {
+        const message =
+          result && result.success === false ? (result.error ?? 'unknown error') : 'unknown error'
+        onToast?.(`${t('diag.export.failed')}: ${message}`, 'error')
+      }
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'unknown error'
+      onToast?.(`${t('diag.export.failed')}: ${message}`, 'error')
+    } finally {
+      setIsExporting(false)
+    }
+  }, [isExporting, onToast])
 
   return (
     <div className="slide-up">
@@ -195,7 +224,18 @@ export function DiagnosticsPanel({ onToast }: DiagnosticsPanelProps): JSX.Elemen
         )}
       </div>
 
-      <div className="form-actions">
+      <div className="form-actions diag-export-actions">
+        <button
+          className="btn btn-secondary diag-export-btn-ipc"
+          onClick={handleIpcExport}
+          disabled={isExporting}
+          style={{ flex: 1 }}
+          data-testid="diag-export-ipc-btn"
+          title={t('diag.export.aria')}
+        >
+          <DownloadIcon />
+          {isExporting ? t('diag.export.exporting') : t('diag.export.label')}
+        </button>
         <button
           className="btn btn-primary"
           onClick={handleExport}
@@ -206,6 +246,27 @@ export function DiagnosticsPanel({ onToast }: DiagnosticsPanelProps): JSX.Elemen
         </button>
       </div>
     </div>
+  )
+}
+
+function DownloadIcon(): JSX.Element {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.8"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      width="14"
+      height="14"
+      aria-hidden="true"
+      focusable="false"
+    >
+      <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+      <polyline points="7 10 12 15 17 10" />
+      <line x1="12" y1="15" x2="12" y2="3" />
+    </svg>
   )
 }
 

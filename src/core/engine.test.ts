@@ -3,6 +3,7 @@ import { Engine } from './engine'
 import type { AgentHooks, ReplyAction, MessageContext } from './hooks'
 import type { DesktopDevice } from './device'
 import type { AppType } from './rpa/types'
+import { Lifecycle, type LifecycleEvent } from './runtime'
 
 /**
  * Build an in-memory `DesktopDevice` whose behaviour can be programmed per
@@ -377,5 +378,88 @@ describe('Engine.setAppType', () => {
 
     engine.setAppType('wework')
     expect(state.calls).toContain('setAppType(wework)')
+  })
+})
+
+describe('Engine.lifecycle integration', () => {
+  it('drives the injected Lifecycle through idle → running → stopped on a clean run', async () => {
+    const state: FakeDeviceState = {
+      measureLayoutResult: { success: true },
+      hasUnreadQueue: [{ hasUnread: false }],
+      isContactUnreadQueue: [],
+      hasChatAreaChangedQueue: [],
+      screenshotResult: '',
+      calls: []
+    }
+    const device = makeFakeDevice(state)
+    const hooks = makeFakeHooks([])
+    const lifecycle = new Lifecycle()
+    const events: LifecycleEvent[] = []
+    lifecycle.subscribe((e) => events.push(e))
+
+    const engine = new Engine(hooks, device, undefined, lifecycle)
+    expect(lifecycle.getState()).toBe('idle')
+
+    const p = engine.start()
+    await vi.advanceTimersByTimeAsync(50)
+    expect(lifecycle.getState()).toBe('running')
+
+    await vi.advanceTimersByTimeAsync(60_000)
+    engine.stop()
+    await vi.advanceTimersByTimeAsync(10_000)
+    await p
+
+    expect(lifecycle.getState()).toBe('stopped')
+    const transitions = events.map((e) => `${e.from}->${e.to}`)
+    expect(transitions).toEqual(['idle->running', 'running->stopped'])
+  })
+
+  it('crashes the lifecycle when measureLayout fails (no transition to stopped)', async () => {
+    const state: FakeDeviceState = {
+      measureLayoutResult: { success: false, error: 'no window' },
+      hasUnreadQueue: [],
+      isContactUnreadQueue: [],
+      hasChatAreaChangedQueue: [],
+      screenshotResult: '',
+      calls: []
+    }
+    const device = makeFakeDevice(state)
+    const hooks = makeFakeHooks([])
+    const lifecycle = new Lifecycle()
+    const events: LifecycleEvent[] = []
+    lifecycle.subscribe((e) => events.push(e))
+
+    const engine = new Engine(hooks, device, undefined, lifecycle)
+    await engine.start()
+
+    expect(lifecycle.getState()).toBe('crashed')
+    const transitions = events.map((e) => `${e.from}->${e.to}`)
+    expect(transitions).toEqual(['idle->running', 'running->crashed'])
+    expect(lifecycle.snapshot().lastError?.message).toBe('no window')
+  })
+
+  it('double-start is a no-op (idempotent guard at the boolean and FSM layer)', async () => {
+    const state: FakeDeviceState = {
+      measureLayoutResult: { success: true },
+      hasUnreadQueue: [{ hasUnread: false }],
+      isContactUnreadQueue: [],
+      hasChatAreaChangedQueue: [],
+      screenshotResult: '',
+      calls: []
+    }
+    const device = makeFakeDevice(state)
+    const hooks = makeFakeHooks([])
+    const lifecycle = new Lifecycle()
+    const engine = new Engine(hooks, device, undefined, lifecycle)
+
+    const p1 = engine.start()
+    await vi.advanceTimersByTimeAsync(10)
+    // Second start must NOT throw IllegalTransitionError from FSM.
+    await expect(engine.start()).resolves.toBeUndefined()
+    expect(lifecycle.getState()).toBe('running')
+
+    engine.stop()
+    await vi.advanceTimersByTimeAsync(10_000)
+    await p1
   })
 })

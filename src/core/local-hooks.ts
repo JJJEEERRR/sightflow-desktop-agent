@@ -6,6 +6,9 @@
 
 import { AgentHooks, MessageContext, ReplyAction, ActionItem, ActionResult } from './hooks'
 import { AIClient, AIClientConfig } from './ai-client'
+import { getLogger } from './observability'
+
+const log = getLogger('hooks.local')
 
 export interface LocalHooksConfig {
   ai: Partial<AIClientConfig> & { apiKey: string }
@@ -19,20 +22,19 @@ export class LocalHooks implements AgentHooks {
   }
 
   async onEngineStart(): Promise<void> {
-    console.log('[LocalHooks] Engine started')
+    log.info('Engine started')
 
-    // Phase 1 Mocking Bypass: 验证 API 连接 -> Phase 3 真实请求
     const testResult = await this.aiClient.testConnection()
     if (!testResult.success) {
-      console.error('[LocalHooks] AI API 连接测试失败:', testResult.error)
-      // 不阻塞启动，但记录错误
+      log.error('AI API connection check failed', { reason: testResult.error })
+      // Non-blocking — boot continues so the user can fix the API key in settings.
     } else {
-      console.log('[LocalHooks] AI API 连接正常')
+      log.info('AI API 连接正常')
     }
   }
 
   async onEngineStop(): Promise<void> {
-    console.log('[LocalHooks] Engine stopped')
+    log.info('Engine stopped')
   }
 
   /**
@@ -47,28 +49,24 @@ export class LocalHooks implements AgentHooks {
    */
   async *getReply(context: MessageContext): AsyncIterable<ReplyAction> {
     if (!context.screenshot) {
-      console.warn('[LocalHooks] 没有截图，跳过')
+      log.warn('getReply skipped: empty screenshot')
       yield { type: 'skip' }
       return
     }
 
-    // 通知 UI：AI 正在思考
     yield { type: 'thinking', content: '正在分析聊天内容...' }
 
     try {
-      // Phase 3 真实网络请求闭环
       const reply = await this.aiClient.getReply(context.screenshot)
 
       if (!reply) {
-        // AI 判定不需要回复
         yield { type: 'skip' }
         return
       }
 
-      // 返回回复文字
       yield { type: 'text', content: reply }
     } catch (error) {
-      console.error('[LocalHooks] AI 回复失败:', error)
+      log.error('AI reply failed', { err: error })
       yield { type: 'skip' }
     }
   }
@@ -97,11 +95,11 @@ export class LocalHooks implements AgentHooks {
   }
 
   onActionComplete(action: ActionItem, result: { success: boolean }): void {
-    console.log('[LocalHooks] Action completed:', action.type, result.success ? '✓' : '✗')
+    log.info('Action completed', { type: action.type, success: result.success })
   }
 
   onError(error: Error, phase: string): void {
-    console.error(`[LocalHooks] Error in ${phase}:`, error.message)
+    log.error(`Error in ${phase}`, { err: error })
   }
 
   /**

@@ -1,5 +1,5 @@
 import { Component, JSX, ReactNode } from 'react'
-import { t } from '../i18n'
+import i18n from '../i18n'
 
 interface Props {
   children: ReactNode
@@ -63,10 +63,14 @@ export class ErrorBoundary extends Component<Props, State> {
     const { error, errorInfo } = this.state
     if (!error) return this.props.children
 
+    // Class components can't use the `useTranslation` hook, so the error
+    // boundary reaches into the imperative i18next instance directly. The
+    // boundary's render path is a hard error case (renderer crash) — it
+    // doesn't need to react to live language changes.
     return (
       <div className="error-boundary" role="alert">
-        <h2 className="error-boundary-title">{t('diag.errorBoundary.title')}</h2>
-        <p className="error-boundary-hint">{t('diag.errorBoundary.hint')}</p>
+        <h2 className="error-boundary-title">{i18n.t('diag.errorBoundary.title')}</h2>
+        <p className="error-boundary-hint">{i18n.t('diag.errorBoundary.hint')}</p>
         <pre className="error-boundary-pre">
           {error.name}: {error.message}
           {error.stack ? `\n\n${error.stack}` : ''}
@@ -79,10 +83,10 @@ export class ErrorBoundary extends Component<Props, State> {
               void this.handleCopy()
             }}
           >
-            {t('diag.errorBoundary.copy')}
+            {i18n.t('diag.errorBoundary.copy')}
           </button>
           <button className="btn btn-primary" onClick={this.handleReload}>
-            {t('diag.errorBoundary.reload')}
+            {i18n.t('diag.errorBoundary.reload')}
           </button>
         </div>
       </div>

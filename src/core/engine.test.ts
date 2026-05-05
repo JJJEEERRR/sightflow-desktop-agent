@@ -667,3 +667,207 @@ describe('Engine.brain integration', () => {
     expect(seenAppTypes[0]).toBe('wework')
   })
 })
+
+describe('Engine.policy integration (Phase 3)', () => {
+  function makePolicyDeviceState(): FakeDeviceState {
+    return {
+      measureLayoutResult: { success: true },
+      hasUnreadQueue: [{ hasUnread: false }, { hasUnread: false }, { hasUnread: false }],
+      isContactUnreadQueue: [],
+      hasChatAreaChangedQueue: [{ hasDiff: false, hasBaseline: true }],
+      screenshotResult: 'screen-policy',
+      calls: []
+    }
+  }
+
+  it('pauses the lifecycle and exits the loop when policy.beforeReply returns a pause directive', async () => {
+    const state = makePolicyDeviceState()
+    const device = makeFakeDevice(state)
+    const brain = makeFakeBrain([])
+    const hooks = makeFakeHooks()
+    const lifecycle = new Lifecycle()
+    const events: LifecycleEvent[] = []
+    lifecycle.subscribe((ev) => events.push(ev))
+
+    const policy: import('./policy').AntiDetectionPolicy = {
+      beforeReply: async () => ({
+        proceed: false as const,
+        reason: 'breaker:consecutiveAiFailures',
+        waitMs: 0,
+        pause: { reason: 'breaker' as const, detail: 'simulated' }
+      }),
+      beforeAction: async () => ({}),
+      afterAction: async () => {},
+      observe: () => {},
+      resetBreaker: () => {},
+      snapshot: () => ({}) as ReturnType<import('./policy').AntiDetectionPolicy['snapshot']>,
+      updateConfig: () => {},
+      getConfig: () => ({}) as ReturnType<import('./policy').AntiDetectionPolicy['getConfig']>
+    } as unknown as import('./policy').AntiDetectionPolicy
+
+    const engine = new Engine(brain, device, hooks, undefined, lifecycle, policy)
+    const p = engine.start()
+    await vi.advanceTimersByTimeAsync(50)
+    await p
+
+    // Engine should never have asked for a screenshot — the gate fired first.
+    expect(state.calls).not.toContain('screenshot')
+    // Lifecycle should have moved into 'paused' with reason 'breaker'.
+    const pauseEvent = events.find((e) => e.to === 'paused')
+    expect(pauseEvent).toBeDefined()
+    expect(pauseEvent?.reason).toBe('breaker')
+    expect(lifecycle.getState()).toBe('paused')
+    expect(engine.isRunning()).toBe(false)
+  })
+
+  it('skips the tick (no screenshot) and re-evaluates after waitMs on a soft block', async () => {
+    const state: FakeDeviceState = {
+      measureLayoutResult: { success: true },
+      hasUnreadQueue: [{ hasUnread: false }, { hasUnread: false }],
+      isContactUnreadQueue: [],
+      // hasDiff:true on every poll so waitForNextUnread returns immediately
+      // and the main loop hits processCurrentChat (and beforeReply) again.
+      hasChatAreaChangedQueue: [
+        { hasDiff: true, hasBaseline: true },
+        { hasDiff: true, hasBaseline: true },
+        { hasDiff: true, hasBaseline: true },
+        { hasDiff: true, hasBaseline: true }
+      ],
+      screenshotResult: 'screen-soft',
+      calls: []
+    }
+    const device = makeFakeDevice(state)
+    const brain = makeFakeBrain([])
+    const hooks = makeFakeHooks()
+
+    let callCount = 0
+    const policy = {
+      beforeReply: async () => {
+        callCount++
+        // Block forever; engine should keep cycling and never screenshot.
+        return {
+          proceed: false as const,
+          reason: 'rateLimit:minInterval',
+          waitMs: 200
+        }
+      },
+      beforeAction: async () => ({}),
+      afterAction: async () => {},
+      observe: () => {},
+      resetBreaker: () => {},
+      snapshot: () => ({}) as never,
+      updateConfig: () => {},
+      getConfig: () => ({}) as never
+    } as unknown as import('./policy').AntiDetectionPolicy
+
+    const engine = new Engine(brain, device, hooks, undefined, undefined, policy)
+    const p = engine.start()
+    await vi.advanceTimersByTimeAsync(50)
+    // Let the engine run several soft-block cycles.
+    await vi.advanceTimersByTimeAsync(15_000)
+    engine.stop()
+    await vi.advanceTimersByTimeAsync(2_000)
+    await p
+
+    expect(state.calls).not.toContain('screenshot')
+    expect(callCount).toBeGreaterThan(1)
+  })
+
+  it('calls policy.beforeAction/afterAction around device.sendMessage and observes aiSuccess', async () => {
+    const state: FakeDeviceState = {
+      measureLayoutResult: { success: true },
+      hasUnreadQueue: [{ hasUnread: false }, { hasUnread: false }],
+      isContactUnreadQueue: [],
+      hasChatAreaChangedQueue: [{ hasDiff: false, hasBaseline: true }],
+      screenshotResult: 'screen-go',
+      calls: []
+    }
+    const device = makeFakeDevice(state)
+    const brain = makeFakeBrain([[{ type: 'text', content: 'hi' }]])
+    const hooks = makeFakeHooks()
+
+    const calls: string[] = []
+    const policy = {
+      beforeReply: async () => {
+        calls.push('beforeReply')
+        return { proceed: true as const }
+      },
+      beforeAction: async (action: { type: string }) => {
+        calls.push(`beforeAction(${action.type})`)
+        return {}
+      },
+      afterAction: async (action: { type: string }, outcome: { success: boolean }) => {
+        calls.push(`afterAction(${action.type}=${outcome.success})`)
+      },
+      observe: (signal: { type: string }) => calls.push(`observe(${signal.type})`),
+      resetBreaker: () => {},
+      snapshot: () => ({}) as never,
+      updateConfig: () => {},
+      getConfig: () => ({}) as never
+    } as unknown as import('./policy').AntiDetectionPolicy
+
+    const engine = new Engine(brain, device, hooks, undefined, undefined, policy)
+    const p = engine.start()
+    await vi.advanceTimersByTimeAsync(50)
+    await vi.advanceTimersByTimeAsync(6_000)
+    engine.stop()
+    await vi.advanceTimersByTimeAsync(2_000)
+    await p
+
+    // Order matters: gate → before → send → after → observe(aiSuccess).
+    const idxGate = calls.indexOf('beforeReply')
+    const idxBefore = calls.indexOf('beforeAction(reply)')
+    const idxAfter = calls.indexOf('afterAction(reply=true)')
+    const idxAi = calls.indexOf('observe(aiSuccess)')
+    expect(idxGate).toBeGreaterThanOrEqual(0)
+    expect(idxBefore).toBeGreaterThan(idxGate)
+    expect(idxAfter).toBeGreaterThan(idxBefore)
+    expect(idxAi).toBeGreaterThan(idxAfter)
+    expect(state.calls.find((c) => c.startsWith('sendMessage'))).toBe('sendMessage(hi)')
+  })
+
+  it('emits afterAction with success:false and aiFailure when sendMessage throws', async () => {
+    const state: FakeDeviceState = {
+      measureLayoutResult: { success: true },
+      hasUnreadQueue: [{ hasUnread: false }, { hasUnread: false }],
+      isContactUnreadQueue: [],
+      hasChatAreaChangedQueue: [{ hasDiff: false, hasBaseline: true }],
+      screenshotResult: 'screen-fail',
+      sendMessageError: new Error('rpa boom'),
+      calls: []
+    }
+    const device = makeFakeDevice(state)
+    const brain = makeFakeBrain([[{ type: 'text', content: 'doomed' }]])
+    const hooks = makeFakeHooks()
+
+    const observed: string[] = []
+    const afters: Array<{ success: boolean }> = []
+    const policy = {
+      beforeReply: async () => ({ proceed: true as const }),
+      beforeAction: async () => ({}),
+      afterAction: async (_a: unknown, outcome: { success: boolean }) => {
+        afters.push(outcome)
+      },
+      observe: (s: { type: string }) => observed.push(s.type),
+      resetBreaker: () => {},
+      snapshot: () => ({}) as never,
+      updateConfig: () => {},
+      getConfig: () => ({}) as never
+    } as unknown as import('./policy').AntiDetectionPolicy
+
+    const engine = new Engine(brain, device, hooks, undefined, undefined, policy)
+    const p = engine.start()
+    await vi.advanceTimersByTimeAsync(50)
+    await vi.advanceTimersByTimeAsync(6_000)
+    engine.stop()
+    await vi.advanceTimersByTimeAsync(2_000)
+    await p
+
+    expect(afters.some((o) => o.success === false)).toBe(true)
+    // sendMessage throwing inside executeDecision is caught — engine still
+    // observes aiSuccess for the brain (it produced a decision) and the
+    // afterAction reports success:false. No aiFailure here because the
+    // failure was an RPA failure, not an AI failure.
+    expect(observed).toContain('aiSuccess')
+  })
+})

@@ -51,10 +51,33 @@ const translations = {
     'settings.general': '通用设置',
     'settings.language': '语言',
 
+    // Diagnostics
+    'diag.title': '诊断',
+    'diag.lifecycle.title': '引擎状态',
+    'diag.lifecycle.state': '当前状态',
+    'diag.lifecycle.enteredAt': '进入时间',
+    'diag.lifecycle.restartBudget': '重启预算',
+    'diag.lifecycle.lastError': '最近错误',
+    'diag.lifecycle.windowEndsAt': '窗口结束于',
+    'diag.logs.title': '实时日志',
+    'diag.logs.empty': '暂无日志记录',
+    'diag.logs.filterLevel': '等级',
+    'diag.logs.filterPhase': '模块',
+    'diag.logs.filterAll': '全部',
+    'diag.transitions.title': '最近状态转换',
+    'diag.transitions.empty': '尚未发生转换',
+    'diag.export': '导出诊断包',
+    'diag.export.success': '诊断包已下载',
+    'diag.errorBoundary.title': 'Renderer 崩溃了',
+    'diag.errorBoundary.hint': '把下面的错误信息复制给开发者，或导出诊断包附在 issue 里',
+    'diag.errorBoundary.copy': '复制错误',
+    'diag.errorBoundary.reload': '刷新',
+
     // Toast
     'toast.engineStarted': '引擎已启动',
     'toast.engineStopped': '引擎已停止',
-    'toast.startFailed': '启动失败'
+    'toast.startFailed': '启动失败',
+    'toast.copied': '已复制到剪贴板'
   },
   en: {
     'app.title': 'SightFlow Desktop',
@@ -98,9 +121,32 @@ const translations = {
     'settings.general': 'General',
     'settings.language': 'Language',
 
+    'diag.title': 'Diagnostics',
+    'diag.lifecycle.title': 'Engine Lifecycle',
+    'diag.lifecycle.state': 'Current State',
+    'diag.lifecycle.enteredAt': 'Entered',
+    'diag.lifecycle.restartBudget': 'Restart Budget',
+    'diag.lifecycle.lastError': 'Last Error',
+    'diag.lifecycle.windowEndsAt': 'Window ends',
+    'diag.logs.title': 'Live Logs',
+    'diag.logs.empty': 'No log records yet',
+    'diag.logs.filterLevel': 'Level',
+    'diag.logs.filterPhase': 'Phase',
+    'diag.logs.filterAll': 'All',
+    'diag.transitions.title': 'Recent Transitions',
+    'diag.transitions.empty': 'No transitions yet',
+    'diag.export': 'Export Bundle',
+    'diag.export.success': 'Diagnostic bundle downloaded',
+    'diag.errorBoundary.title': 'Renderer crashed',
+    'diag.errorBoundary.hint':
+      'Copy the error below and send it to the developer, or attach a diagnostic bundle to your issue',
+    'diag.errorBoundary.copy': 'Copy error',
+    'diag.errorBoundary.reload': 'Reload',
+
     'toast.engineStarted': 'Engine started',
     'toast.engineStopped': 'Engine stopped',
-    'toast.startFailed': 'Failed to start'
+    'toast.startFailed': 'Failed to start',
+    'toast.copied': 'Copied to clipboard'
   }
 } as const
 

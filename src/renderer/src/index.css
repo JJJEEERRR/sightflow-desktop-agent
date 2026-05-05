@@ -629,3 +629,274 @@ textarea.form-input {
 .slide-up {
   animation: slideUp 400ms cubic-bezier(0.16, 1, 0.3, 1) forwards;
 }
+
+/* ─── Diagnostics ─── */
+.app-header-title {
+  margin-left: 8px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-secondary);
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.diag-card {
+  margin-bottom: 12px;
+}
+
+.diag-card-title-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.diag-filters {
+  display: flex;
+  gap: 6px;
+}
+
+.diag-filter {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  background: var(--bg-glass-input);
+  color: var(--text-primary);
+  border: 1px solid var(--glass-border);
+  border-radius: var(--radius-sm);
+  padding: 4px 8px;
+  outline: none;
+  cursor: pointer;
+}
+
+.diag-filter:focus {
+  border-color: var(--border-focus);
+}
+
+.diag-lifecycle-grid {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.diag-lifecycle-empty {
+  display: flex;
+  align-items: center;
+}
+
+.diag-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 12px;
+}
+
+.diag-label {
+  color: var(--text-secondary);
+  min-width: 76px;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.diag-value {
+  color: var(--text-primary);
+  font-family: var(--font-mono);
+  font-size: 12px;
+}
+
+.diag-subvalue {
+  color: var(--text-muted);
+  margin-left: 6px;
+  font-size: 11px;
+}
+
+.diag-error-msg {
+  color: var(--error);
+}
+
+.diag-state-pill {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: var(--radius-full);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  border: 1px solid var(--glass-border);
+  background: var(--bg-glass);
+  color: var(--text-secondary);
+}
+
+.diag-state-pill.idle,
+.diag-state-pill.stopped {
+  color: var(--text-secondary);
+}
+
+.diag-state-pill.running {
+  color: var(--accent);
+  background: var(--accent-subtle);
+  border-color: var(--accent-subtle);
+}
+
+.diag-state-pill.paused {
+  color: var(--warning);
+  border-color: rgba(251, 191, 36, 0.2);
+  background: rgba(251, 191, 36, 0.08);
+}
+
+.diag-state-pill.crashed {
+  color: var(--error);
+  background: var(--error-bg);
+  border-color: rgba(248, 113, 113, 0.2);
+}
+
+.diag-state-pill.recovering {
+  color: #60a5fa;
+  background: rgba(96, 165, 250, 0.08);
+  border-color: rgba(96, 165, 250, 0.2);
+}
+
+.diag-log-stream {
+  max-height: 320px;
+  overflow-y: auto;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  line-height: 1.55;
+  background: var(--bg-glass-input);
+  border-radius: var(--radius-sm);
+  padding: 8px;
+  border: 1px solid var(--glass-border);
+}
+
+.diag-log-row {
+  display: grid;
+  grid-template-columns: 64px 56px 100px 1fr;
+  gap: 8px;
+  padding: 2px 0;
+  word-break: break-word;
+}
+
+.diag-log-row.diag-log-error {
+  color: var(--error);
+}
+.diag-log-row.diag-log-warn {
+  color: var(--warning);
+}
+.diag-log-row.diag-log-debug,
+.diag-log-row.diag-log-trace {
+  color: var(--text-muted);
+}
+
+.diag-log-time {
+  color: var(--text-muted);
+}
+
+.diag-log-level {
+  font-weight: 600;
+  letter-spacing: 0.04em;
+}
+.diag-log-level.diag-log-error {
+  color: var(--error);
+}
+.diag-log-level.diag-log-warn {
+  color: var(--warning);
+}
+.diag-log-level.diag-log-info {
+  color: var(--accent);
+}
+.diag-log-level.diag-log-debug,
+.diag-log-level.diag-log-trace {
+  color: var(--text-muted);
+}
+
+.diag-log-phase {
+  color: var(--text-secondary);
+}
+
+.diag-log-msg {
+  color: inherit;
+}
+
+.diag-log-err {
+  color: var(--error);
+}
+
+.diag-transitions {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-height: 200px;
+  overflow-y: auto;
+}
+
+.diag-transition {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+}
+
+.diag-transition-time {
+  color: var(--text-muted);
+  min-width: 64px;
+}
+
+.diag-transition-arrow {
+  color: var(--text-muted);
+}
+
+.diag-transition-reason {
+  color: var(--text-secondary);
+  font-style: italic;
+}
+
+/* ─── ErrorBoundary ─── */
+.error-boundary {
+  padding: 24px;
+  margin: 16px;
+  background: var(--bg-glass);
+  border: 1px solid var(--glass-border);
+  border-radius: var(--radius-md);
+  color: var(--text-primary);
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  height: calc(100vh - 32px);
+  overflow: auto;
+}
+
+.error-boundary-title {
+  color: var(--error);
+  font-size: 16px;
+  font-weight: 600;
+}
+
+.error-boundary-hint {
+  color: var(--text-secondary);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.error-boundary-pre {
+  background: var(--bg-glass-input);
+  border: 1px solid var(--glass-border);
+  border-radius: var(--radius-sm);
+  padding: 12px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-primary);
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 50vh;
+  overflow: auto;
+}
+
+.error-boundary-actions {
+  display: flex;
+  gap: 8px;
+}

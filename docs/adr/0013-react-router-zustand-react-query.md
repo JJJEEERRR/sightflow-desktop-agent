@@ -202,3 +202,129 @@ double-wrapping nested routers would break navigation.
 - **DiagnosticsPanel onToast prop** still exists for backward
   compatibility with the test fixtures. Once those tests are
   migrated to read `useToastStore` directly, drop the prop.
+
+## Migration outcome (PR2)
+
+Phase 5 PR2 (`feat/p5-pr2-data-layer`) completed the audit work
+sketched in the "Open items" list. Final tally:
+
+### Channels migrated to react-query
+
+**Reads (5):**
+
+- `logs:recent` → `useQuery` with 1.5s `refetchInterval` (PR1; baseline).
+- `engine:lifecycle` → `useQuery` (no `refetchInterval`; push-driven via
+  `engine:state` writing to the same cache key).
+- `policy:get` → `useQuery` with `staleTime: Infinity` +
+  `refetchOnWindowFocus: false` (config rarely changes; explicit
+  invalidation is the only refetch trigger so unsaved form edits don't
+  get blown away by a focus-driven refetch).
+- `policy:snapshot` → `useQuery` with 2s `refetchInterval` (live
+  rate-limiter / breaker counters).
+- `settings:getAll` → still served by the one-shot
+  `useSettingsBootstrap` hook; the form draft lives in zustand. The
+  bootstrap hook intentionally stayed imperative because the result
+  seeds a zustand store (settings draft) rather than a render-cache
+  slot — moving it to `useQuery` would have added a second source of
+  truth for the same data.
+
+**Writes (6 mutations):**
+
+- `engine:start` → `useMutation` (toast on success/error; invalidates
+  `['engine:lifecycle']`).
+- `engine:stop` → `useMutation` (best-effort; `onSettled` flips status
+  to idle even on rejection).
+- `engine:testConnection` → `useMutation` (`isPending` drives button
+  spinner label).
+- `engine:updateConfig` → `useMutation` (best-effort hot-reload chained
+  from `settings:set` success; failure swallowed silently).
+- `settings:set` → `useMutation` (invalidates `['settings:getAll']`).
+- `policy:set` → `useMutation` (invalidates both `['policy:get']` and
+  `['policy:snapshot']`).
+- `policy:resetBreaker` → `useMutation` (invalidates
+  `['policy:snapshot']`).
+- `diag:export` → `useMutation` (`isPending` drives button disable +
+  "Exporting…" label).
+
+### Push subscribers retained (3)
+
+Imperative `window.electron.on(...)` subscribers survived because they
+ingest data from a one-way push channel that has no IPC `read`
+counterpart. Each one routes into the **same** cache key or zustand
+slot as the corresponding `useQuery` so consumers read from a single
+source of truth:
+
+- `engine:state` (in `useEngineSubscription`) → writes both
+  `useEngineStore.status` (coarse running/idle/error) and
+  `queryClient.setQueryData(['engine:lifecycle'], snapshot)` (rich
+  payload). PR2 widened this hook from "engine store only" to "engine
+  store + cache" so DiagnosticsPanel's `useQuery` cache stays warm
+  without an additional IPC roundtrip.
+- `engine:state` (in `DiagnosticsPanel`) → also writes the lifecycle
+  cache (idempotent with `useEngineSubscription`) and appends to the
+  page-local `transitions` `useState`. Kept colocated because tests
+  mount `DiagnosticsPanel` without `AppLayout`, so the global
+  subscriber wouldn't be wired in jsdom.
+- `engine:log` (in `useEngineSubscription`) → writes
+  `useEngineStore.lastError` for "engine无法启动"-style failures.
+- `engine:log` (in `ControlPage`) → appends to the page-local `logs`
+  `useState`.
+- `engine:log-record` (in `DiagnosticsPanel`) → writes via
+  `setQueryData(['logs:recent', 200], …)` (PR1).
+
+### State-mgmt-via-cache vs page-local `useState`
+
+Two pieces of state stayed in `useState` rather than the react-query
+cache:
+
+- **`ControlPage.logs`** — the engine activity log buffer (per-page,
+  push-only).
+- **`DiagnosticsPanel.transitions`** — the lifecycle transition list
+  (per-page, push-only).
+
+Rationale: both are append-only ring buffers fed exclusively by push
+events. There is no IPC `read` channel for either; storing them in the
+react-query cache would amount to "useState in disguise" with extra
+ceremony. They're page-local, never read by another component, and
+never need cross-page invalidation. The PR1 cache-as-state pattern
+(used for `logs:recent`) earns its keep when there's a corresponding
+read channel that benefits from a polling backstop; for pure-push
+streams, `useState` is the simpler fit. The plan's PR2 §"Concrete
+migration checklist > ControlPage" explicitly leaves this as a judgment
+call with both choices acceptable.
+
+### Code shape
+
+- Removed every `useEffect` + `window.electron?.invoke(…)` triplet
+  outside `lib/ipc.ts`. The renderer now has **zero** direct
+  `electron.invoke` call sites in production code (verifiable via
+  `rg "electron\\?\\.invoke|electron\\.invoke" src/renderer/src` —
+  hits only the wrapper at `lib/ipc.ts:16` plus test fixtures).
+- Removed the `useState({ loading, isExporting, testing, saving })`
+  ad-hoc loading flags from `ControlPage`, `SettingsPage`,
+  `DiagnosticsPanel`, and `AntiDetectionSettings`. Every
+  in-flight indicator now reads off `mutation.isPending`.
+- `AntiDetectionSettings` shed its `setInterval`-style snapshot
+  refresher entirely; `refetchInterval: 2_000` carries the load. The
+  manual `initialConfigRef` was likewise dropped — `serverConfig` (the
+  query cache) IS the canonical snapshot, so the Balanced preset reads
+  from it directly.
+- `AntiDetectionSettings` syncs server config → local form state via
+  the React docs' "Adjusting some state when a prop changes"
+  render-phase pattern (a second `useState` tracking the last-seen
+  serverConfig identity). This avoids the `set-state-in-effect` lint
+  while preserving the "wipe form on canonical refresh" behaviour.
+
+### Tests
+
+- All 484 tests continue to pass at PR2 boundary.
+- `AntiDetectionSettings.test.tsx` swapped bare `render(...)` for
+  `renderWithProviders` so the new `useQuery` calls have a
+  QueryClientProvider.
+- The "Reset breaker re-fetches the snapshot" test loosened its
+  exact-count assertion (`=== 2`) to `≥ 2` because the new 2-second
+  `refetchInterval` could occasionally land an extra polling-driven
+  call during long test runs. The behavioural contract ("at least
+  the initial backfill plus the post-reset refetch") is preserved.
+- No test count delta. The migration is purely structural — same
+  user-visible behaviour, different internals.

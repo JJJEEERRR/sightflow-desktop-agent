@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState, JSX } from 'react'
-import { useQuery, useQueryClient } from '@tanstack/react-query'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { t } from '../i18n'
 import { ipc } from '../lib/ipc'
 import type {
@@ -14,6 +14,18 @@ const MAX_LOG_RECORDS = 500
 const MAX_TRANSITIONS = 30
 const LOGS_RECENT_LIMIT = 200
 const LOGS_QUERY_KEY = ['logs:recent', LOGS_RECENT_LIMIT] as const
+const LIFECYCLE_QUERY_KEY = ['engine:lifecycle'] as const
+
+interface DiagExportOk {
+  success: true
+  path: string
+  sizeBytes: number
+}
+interface DiagExportErr {
+  success: false
+  error: string
+}
+type DiagExportResult = DiagExportOk | DiagExportErr
 
 const LEVEL_OPTIONS: ReadonlyArray<LogLevel | 'all'> = [
   'all',
@@ -34,20 +46,25 @@ interface DiagnosticsPanelProps {
  * transitions, all driven by IPC channels established in Phase 1
  * (`engine:lifecycle`, `logs:recent`, `engine:log-record`, `engine:state`).
  *
- * As of Phase 5 PR1 the `logs:recent` ring-buffer pull is served by
- * `useQuery` (with a 1.5s `refetchInterval` as belt-and-suspenders for the
- * push-channel feed). Live `engine:log-record` events route into the
- * react-query cache via `setQueryData` so a single source of truth holds
- * the rendered list. Lifecycle + transitions remain in local state for
- * PR1; they migrate in PR2.
+ * As of Phase 5 PR2:
+ *  - `logs:recent` ring-buffer pull (PR1) — `useQuery` with a 1.5s
+ *    `refetchInterval` belt-and-suspenders for the push feed.
+ *  - `engine:lifecycle` initial backfill — `useQuery` (PR2). Push events
+ *    on `engine:state` route into the same cache key via `setQueryData`
+ *    so a single source of truth holds the snapshot.
+ *  - `engine:log-record` push events route into the logs cache via
+ *    `setQueryData` (PR1).
+ *  - The transitions list stays in local `useState` because it's a
+ *    page-local accumulation of push events with no IPC channel of its
+ *    own — see ADR-0013 migration outcome §"State-mgmt-via-cache vs
+ *    page-local useState".
+ *  - `diag:export` is a one-shot mutation via `useMutation`.
  */
 export function DiagnosticsPanel({ onToast }: DiagnosticsPanelProps): JSX.Element {
   const queryClient = useQueryClient()
-  const [snapshot, setSnapshot] = useState<LifecycleSnapshot | null>(null)
   const [transitions, setTransitions] = useState<LifecycleEvent[]>([])
   const [levelFilter, setLevelFilter] = useState<LogLevel | 'all'>('all')
   const [phaseFilter, setPhaseFilter] = useState<string>('all')
-  const [isExporting, setIsExporting] = useState<boolean>(false)
 
   const logStreamRef = useRef<HTMLDivElement>(null)
 
@@ -66,25 +83,25 @@ export function DiagnosticsPanel({ onToast }: DiagnosticsPanelProps): JSX.Elemen
     staleTime: 0
   })
 
-  // ── One-shot lifecycle backfill ──────────────────────────────────────
-  // Lifecycle stays in local state for PR1; PR2 moves it onto useQuery as
-  // well. We backfill once and let the engine:state push subscriber take
-  // over from there.
-  useEffect(() => {
-    let cancelled = false
-    void (async (): Promise<void> => {
+  // ── Lifecycle (react-query, push-driven) ─────────────────────────────
+  // No `refetchInterval` — the `engine:state` push channel keeps the
+  // cache fresh; this `useQuery` exists purely for the initial backfill
+  // and to give consumers a `data` slot that re-renders when the push
+  // subscriber writes via `setQueryData`.
+  const { data: snapshot = null } = useQuery<LifecycleSnapshot | null>({
+    queryKey: LIFECYCLE_QUERY_KEY,
+    queryFn: async () => {
       try {
         const lifecycle = await ipc.invoke<LifecycleSnapshot | null>('engine:lifecycle')
-        if (cancelled) return
-        if (lifecycle) setSnapshot(lifecycle)
+        return lifecycle ?? null
       } catch {
-        // Defensive: a missing handler shouldn't crash the page.
+        // Defensive: a missing handler shouldn't crash the page; treat
+        // as "no snapshot yet" and let the push channel populate it.
+        return null
       }
-    })()
-    return (): void => {
-      cancelled = true
-    }
-  }, [])
+    },
+    staleTime: Infinity
+  })
 
   // ── Live log records → react-query cache ─────────────────────────────
   useEffect(() => {
@@ -101,18 +118,27 @@ export function DiagnosticsPanel({ onToast }: DiagnosticsPanelProps): JSX.Elemen
   }, [queryClient])
 
   // ── Live lifecycle transitions ───────────────────────────────────────
+  // Writes the snapshot into the same cache key as the lifecycle useQuery
+  // (single source of truth). The transitions list itself stays in local
+  // state — there is no `engine:transitions` IPC channel, so the cache
+  // would just be page-local state in disguise.
+  //
+  // Note: AppLayout's `useEngineSubscription` also writes to
+  // `['engine:lifecycle']` from the same push channel; the two writes are
+  // idempotent. Tests that mount DiagnosticsPanel without AppLayout still
+  // see lifecycle updates via this local listener.
   useEffect(() => {
     const cleanup = window.electron?.on('engine:state', (...args) => {
       const payload = args[0] as LifecycleStatePayload | undefined
       if (!payload) return
-      setSnapshot(payload.snapshot)
+      queryClient.setQueryData<LifecycleSnapshot | null>(LIFECYCLE_QUERY_KEY, payload.snapshot)
       setTransitions((prev) => {
         const next = prev.length >= MAX_TRANSITIONS ? prev.slice(-MAX_TRANSITIONS + 1) : prev
         return [...next, payload.event]
       })
     })
     return cleanup
-  }, [])
+  }, [queryClient])
 
   // Auto-scroll the log container to the bottom when new records land.
   // Using `scrollTop = scrollHeight` instead of `scrollIntoView` keeps this
@@ -163,27 +189,31 @@ export function DiagnosticsPanel({ onToast }: DiagnosticsPanelProps): JSX.Elemen
   // Triggers the main-side `diag:export` handler (Track A) which writes a zip
   // to disk containing logs + config + state snapshot. The renderer never
   // touches the filesystem; we just surface the resulting path/error via toast.
-  const handleIpcExport = useCallback(async (): Promise<void> => {
-    if (isExporting) return
-    setIsExporting(true)
-    try {
-      const result = await ipc.invoke<
-        { success: true; path: string; sizeBytes: number } | { success: false; error: string }
-      >('diag:export', { includeLogs: true, daysBack: 14 })
+  const diagExport = useMutation<
+    DiagExportResult,
+    Error,
+    { includeLogs: boolean; daysBack: number }
+  >({
+    mutationFn: (vars) => ipc.invoke<DiagExportResult>('diag:export', vars),
+    onSuccess: (result) => {
       if (result?.success === true) {
         onToast?.(`${t('diag.export.success')}: ${result.path}`, 'success')
       } else {
         const message =
-          result && result.success === false ? (result.error ?? 'unknown error') : 'unknown error'
+          result?.success === false ? (result.error ?? 'unknown error') : 'unknown error'
         onToast?.(`${t('diag.export.failed')}: ${message}`, 'error')
       }
-    } catch (err) {
+    },
+    onError: (err) => {
       const message = err instanceof Error ? err.message : 'unknown error'
       onToast?.(`${t('diag.export.failed')}: ${message}`, 'error')
-    } finally {
-      setIsExporting(false)
     }
-  }, [isExporting, onToast])
+  })
+  const isExporting = diagExport.isPending
+  const handleIpcExport = useCallback((): void => {
+    if (diagExport.isPending) return
+    diagExport.mutate({ includeLogs: true, daysBack: 14 })
+  }, [diagExport])
 
   return (
     <div className="slide-up">

@@ -1,4 +1,5 @@
 import { JSX, useCallback, useEffect, useRef, useState } from 'react'
+import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { t, type TranslationKey } from '../i18n'
 import { ipc } from '../lib/ipc'
 import { useEngineStore } from '../stores/engine'
@@ -30,13 +31,37 @@ interface ErrResult {
 
 type IpcResult<T = unknown> = OkResult<T> | ErrResult
 
+interface EngineStartConfig {
+  apiKey: string
+  model?: string
+  baseURL?: string
+  systemPrompt?: string
+  appType: AppKind
+}
+
 /**
  * Home route. Renders the engine status + start/stop control + recent
- * activity log. Status flows through the global engine store; the log
- * stream remains in local state for PR1 (it migrates to react-query +
- * `logs:recent` in PR2 — see ADR-0013).
+ * activity log.
+ *
+ * Phase 5 PR2 migration:
+ *  - `engine:start` → `useMutation` (pending state drives button disable;
+ *    success/error route through toast + engine store).
+ *  - `engine:stop` → `useMutation` (best-effort; failure still flips UI
+ *    back to idle so the user can retry).
+ *  - The `logs` ring buffer remains a local `useState` rather than a
+ *    cache-as-state slot. Rationale: it's a push-only stream with no
+ *    corresponding IPC `read` channel — moving it into the cache would
+ *    just be `useState` in disguise. ControlPage is also the only
+ *    consumer; no cross-page coordination needed. (See ADR-0013
+ *    migration outcome §"State-mgmt-via-cache vs page-local useState".)
+ *  - Engine `status` continues to flow through the global engine store,
+ *    fed by `useEngineSubscription` and the mutation success handlers
+ *    here. The store is the single source of truth for the coarse
+ *    running/idle/error indicator; the rich `engine:lifecycle` snapshot
+ *    lives in the react-query cache (DiagnosticsPanel).
  */
 export function ControlPage(): JSX.Element {
+  const queryClient = useQueryClient()
   const status = useEngineStore((s) => s.status)
   const setStatus = useEngineStore((s) => s.setStatus)
   const draft = useSettingsStore((s) => s.draft)
@@ -73,45 +98,54 @@ export function ControlPage(): JSX.Element {
     return cleanup
   }, [addLog])
 
-  const handleStart = useCallback(async () => {
+  const startEngine = useMutation<IpcResult, Error, EngineStartConfig>({
+    mutationFn: (config) => ipc.invoke<IpcResult>('engine:start', config),
+    onSuccess: (result) => {
+      if (result?.success) {
+        setStatus('running')
+        pushToast(t('toast.engineStarted'), 'success')
+        queryClient.invalidateQueries({ queryKey: ['engine:lifecycle'] })
+      } else {
+        setStatus('error')
+        pushToast((result as ErrResult)?.error || t('toast.startFailed'), 'error')
+      }
+    },
+    onError: (err) => {
+      const message = err instanceof Error ? err.message : String(err)
+      setStatus('error')
+      pushToast(message || t('toast.startFailed'), 'error')
+    }
+  })
+
+  const stopEngine = useMutation<unknown, Error, void>({
+    mutationFn: () => ipc.invoke('engine:stop'),
+    onSettled: () => {
+      // Stop is best-effort: even if the IPC layer is wedged, we want the
+      // UI to flip back to idle so the user can retry.
+      setStatus('idle')
+      pushToast(t('toast.engineStopped'), 'success')
+      queryClient.invalidateQueries({ queryKey: ['engine:lifecycle'] })
+    }
+  })
+
+  const handleStart = useCallback((): void => {
     const apiKey = draft.apiKey ?? ''
     if (!apiKey) {
       pushToast(t('control.start.nokey'), 'error')
       return
     }
-    const config = {
+    startEngine.mutate({
       apiKey,
       model: draft.model || undefined,
       baseURL: draft.baseURL || undefined,
       systemPrompt: draft.systemPrompt || undefined,
       appType: draft.appType || 'weixin'
-    }
-    try {
-      const result = await ipc.invoke<IpcResult>('engine:start', config)
-      if (result?.success) {
-        setStatus('running')
-        pushToast(t('toast.engineStarted'), 'success')
-      } else {
-        setStatus('error')
-        pushToast((result as ErrResult)?.error || t('toast.startFailed'), 'error')
-      }
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err)
-      setStatus('error')
-      pushToast(message || t('toast.startFailed'), 'error')
-    }
-  }, [draft, pushToast, setStatus])
+    })
+  }, [draft, pushToast, startEngine])
 
-  const handleStop = useCallback(async () => {
-    try {
-      await ipc.invoke('engine:stop')
-    } catch {
-      // Stop is best-effort: even if the IPC layer is wedged, we want the
-      // UI to flip back to idle so the user can retry.
-    }
-    setStatus('idle')
-    pushToast(t('toast.engineStopped'), 'success')
-  }, [pushToast, setStatus])
+  const handleStop = useCallback((): void => {
+    stopEngine.mutate()
+  }, [stopEngine])
 
   const statusLabel =
     status === 'running'
@@ -147,6 +181,7 @@ export function ControlPage(): JSX.Element {
           <button
             className="bottom-btn bottom-btn-stop"
             onClick={handleStop}
+            disabled={stopEngine.isPending}
             style={{ flex: 1 }}
             aria-label={t('control.stop')}
           >
@@ -156,6 +191,7 @@ export function ControlPage(): JSX.Element {
           <button
             className="bottom-btn bottom-btn-start bottom-btn-play"
             onClick={handleStart}
+            disabled={startEngine.isPending}
             style={{ flex: 1 }}
             aria-label={t('control.start')}
           >

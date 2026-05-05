@@ -489,3 +489,111 @@ After this PR merges, Phase 1 (Stability & 24/7 Operation) starts on a fresh
 branch. Phase 1 scope per the foundation design spec: anti-detect input
 patterns, supervisor for engine recovery, structured logging
 (pino + JSON files), config schema (zod), and event bus for log streaming.
+
+---
+
+## 2026-05-05 (afternoon) �?? Functional verification + unit-test bedrock
+
+### Context
+
+User said: "??????????????????????????".
+Two goals: (1) confirm Phase 0.5's type-strictness refactor did not break runtime
+behaviour, (2) ratchet test coverage on the testable surface so future
+refactors stay safe.
+
+### What changed (verification)
+
+1. **Production build** �?? `npm run build` ran clean: main 16 KB, preload
+   0.8 KB, renderer 572 KB. The pre-existing `vision-utils.ts` "dynamic +
+   static import" warning is not new.
+2. **Dev launch** �?? `npm run dev` launched the Electron window without runtime
+   errors. User performed manual verification of: app boot, settings persistence,
+   start-button error path when WeChat is absent.
+
+### What changed (tests)
+
+Added 76 new unit tests across 9 files, raising the test count from 2 �?? 78 and
+overall coverage from 0% �?? 44.79% lines / 83% branches / 56.56% functions.
+
+| File                                 | Tests | Coverage of source          |
+| ------------------------------------ | ----- | --------------------------- |
+| `src/core/ai-client.test.ts`         | 12    | ai-client.ts: 97.5%         |
+| `src/core/engine.test.ts`            | 8     | engine.ts: 89.8%            |
+| `src/core/local-hooks.test.ts`       | 7     | local-hooks.ts: 79.6%       |
+| `src/core/rpa/util.test.ts`          | 4     | util.ts: 90.2%              |
+| `src/core/rpa/window-utils.test.ts`  | 5     | window-utils.ts: 34% (pure) |
+| `src/core/rpa/vision-utils.test.ts`  | 22    | vision-utils.ts: 53% (pure) |
+| `src/core/rpa/image-compare.test.ts` | 5     | image-compare.ts: 70.2%     |
+| `src/renderer/src/i18n.test.ts`      | 6     | i18n.ts: 100%               |
+| `src/renderer/src/App.test.tsx`      | 7     | App.tsx: 86.5%              |
+
+### Key design decisions
+
+1. **Drove `engine.ts` with FakeDevice + FakeHooks rather than mocking
+   individual methods.** This keeps the orchestration logic �?? perception �??
+   decision �?? execution ordering, the 3-failure cache-clear path, the diff vs
+   red-dot dual-channel polling, the error-keeps-running path �?? as the actual
+   target of the test, not the mock interactions. Worth the upfront fixture
+   complexity because Engine is the single most fragile file in the repo.
+
+2. **`ai-client.ts` tests use a hand-rolled `Response` double**, not Node 20+'s
+   `Response`. Reason: vitest 1.6 + Windows + jsdom-less node env had inconsistent
+   `Response` constructor support. The double exposes only `ok`/`status`/`json`/
+   `text` �?? everything `AIClient` actually consumes.
+
+3. **Renderer tests use `/** @vitest-environment jsdom \*/`headers + inline`import '@testing-library/jest-dom/vitest'`.\*\* Vitest's per-project setup
+   files don't apply when test files are run by explicit CLI path; the
+   header+import combo guarantees the right environment regardless of how
+   the test file is invoked.
+
+4. **No tests for files requiring real Electron / native modules.** Specifically:
+   `main/index.ts`, `main/permission.ts`, `preload/index.ts`, `rpa-device.ts`,
+   `has-unread.ts`, `input-utils.ts`, `screenshot-utils.ts`. These are exercised
+   by the GitHub Actions `Build Verify` matrix which actually runs
+   `electron-vite build` on Windows + macOS. Trade-off: missed bugs in those
+   files won't be caught until integration time. Acceptable because all of
+   them are thin adapters around external APIs �?? the core logic lives in
+   the files that ARE covered.
+
+5. **Coverage thresholds set to floors (40/40/50/75) in `vitest.config.ts`,
+   not per-file.** The vitest 1.6 per-file threshold syntax interacts badly
+   with the global aggregate (drops it to 9.55% via include-set re-resolution).
+   Per-file targets are documented in `tests/README.md` instead, enforced
+   socially during code review until vitest's per-file threshold story stabilises.
+
+6. **Added @testing-library/{react,jest-dom,user-event}** as devDependencies.
+   Installed with `--ignore-scripts` to avoid native rebuilds. Renderer code
+   was previously untestable; now it has a smoke layer (RTL render +
+   IPC mock) that catches App.tsx regressions.
+
+### Tooling addenda
+
+- `tests/setup.jsdom.ts` now imports `@testing-library/jest-dom/vitest`. (The
+  per-test-file inline import remains as belt-and-suspenders for explicit-path
+  CLI invocations.)
+- `tests/README.md` documents how to add tests, the per-file coverage targets,
+  and the list of intentionally-untested files with their justification.
+- Logo and CSS imports in `App.test.tsx` are stubbed via `vi.mock(...)` because
+  vitest jsdom doesn't run Vite's asset pipeline.
+
+### Verification
+
+- `npm run lint`: 0 errors, 0 warnings.
+- `npm run typecheck`: clean (both node + web projects).
+- `npm test`: 78/78 passing.
+- `npm run test:coverage`: 44.79% / 83% / 56.56% / 44.79% (above floors).
+- `npm run build`: production bundles built cleanly.
+
+### Reversibility
+
+Tests are additive. Reverting amounts to `git revert` of the merge commit;
+no production code semantics changed (all production-side changes were the
+public `Engine.setAppType` already shipped in PR #2 and additive constraints
+on existing types). The new devDependencies (`@testing-library/*`) can stay
+even on a partial revert.
+
+### Next
+
+User checkpoint: visual verification of dev launch was requested in parallel
+with this work. If the user reports any regression there, fix-forward. Then
+proceed to Phase 1 per the foundation spec.

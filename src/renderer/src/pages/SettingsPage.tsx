@@ -1,7 +1,7 @@
 import { JSX, useCallback } from 'react'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
+import { useTranslation } from 'react-i18next'
 import { useNavigate } from 'react-router-dom'
-import { t } from '../i18n'
 import { ipc } from '../lib/ipc'
 import { useSettingsStore } from '../stores/settings'
 import { useToastStore } from '../stores/toast'
@@ -59,6 +59,7 @@ interface TestConnectionPayload {
  *    and "Testing…".
  */
 export function SettingsPage(): JSX.Element {
+  const { t } = useTranslation()
   const navigate = useNavigate()
   const queryClient = useQueryClient()
   const draft = useSettingsStore((s) => s.draft)

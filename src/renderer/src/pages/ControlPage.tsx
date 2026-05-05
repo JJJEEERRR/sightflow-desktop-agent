@@ -1,6 +1,6 @@
 import { JSX, useCallback, useEffect, useRef, useState } from 'react'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
-import { t, type TranslationKey } from '../i18n'
+import { useTranslation } from 'react-i18next'
 import { ipc } from '../lib/ipc'
 import { useEngineStore } from '../stores/engine'
 import { useSettingsStore } from '../stores/settings'
@@ -13,6 +13,19 @@ interface LogEntry {
   type: 'thinking' | 'reply' | 'skip' | 'error'
   content: string
 }
+
+// Static map from the four log-entry types onto their concrete i18n keys.
+// Keeping this as a literal-typed lookup (rather than building the key
+// via template-string interpolation at the call site) preserves the
+// compile-time key safety from `i18n/types.d.ts` — a `LogEntry['type']`
+// gone wrong would fail to index this map, and a typo in any key would
+// fail to satisfy the resource type.
+const LOG_TYPE_KEY = {
+  thinking: 'control.log.thinking',
+  reply: 'control.log.reply',
+  skip: 'control.log.skip',
+  error: 'control.log.error'
+} as const
 
 interface EngineLogPayload {
   type: string
@@ -61,6 +74,7 @@ interface EngineStartConfig {
  *    lives in the react-query cache (DiagnosticsPanel).
  */
 export function ControlPage(): JSX.Element {
+  const { t } = useTranslation()
   const queryClient = useQueryClient()
   const status = useEngineStore((s) => s.status)
   const setStatus = useEngineStore((s) => s.setStatus)
@@ -141,7 +155,7 @@ export function ControlPage(): JSX.Element {
       systemPrompt: draft.systemPrompt || undefined,
       appType: draft.appType || 'weixin'
     })
-  }, [draft, pushToast, startEngine])
+  }, [draft, pushToast, startEngine, t])
 
   const handleStop = useCallback((): void => {
     stopEngine.mutate()
@@ -209,9 +223,7 @@ export function ControlPage(): JSX.Element {
             logs.map((entry, i) => (
               <div className="log-entry" key={i}>
                 <span className="log-time">{entry.time}</span>
-                <span className={`log-type ${entry.type}`}>
-                  {t(`control.log.${entry.type}` as TranslationKey)}
-                </span>
+                <span className={`log-type ${entry.type}`}>{t(LOG_TYPE_KEY[entry.type])}</span>
                 <span>{entry.content}</span>
               </div>
             ))

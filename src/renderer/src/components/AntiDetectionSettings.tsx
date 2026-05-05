@@ -1,6 +1,6 @@
 import { useCallback, useMemo, useState, JSX } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { t } from '../i18n'
+import { useTranslation } from 'react-i18next'
 import { ipc } from '../lib/ipc'
 
 // UI mirror of src/core/policy/config.ts. Source of truth lives in core;
@@ -136,6 +136,7 @@ export function AntiDetectionSettings({
   onToast,
   onNavigateDiagnostics
 }: AntiDetectionSettingsProps): JSX.Element {
+  const { t } = useTranslation()
   const queryClient = useQueryClient()
   const [config, setConfig] = useState<AntiDetectionConfig | null>(null)
   const [windowsJson, setWindowsJson] = useState<string>('{}')
@@ -315,7 +316,7 @@ export function AntiDetectionSettings({
         setWindowsJsonError(t('policy.invalidWindowsJson'))
       }
     },
-    [updateSchedule]
+    [updateSchedule, t]
   )
 
   const handleBannedKeywordsChange = useCallback(
@@ -667,6 +668,7 @@ function CheckboxRow({
   onChange: (v: boolean) => void
   testId: string
 }): JSX.Element {
+  const { t } = useTranslation()
   return (
     <div className="form-group policy-checkbox-row">
       <label className="policy-checkbox-label">
@@ -726,6 +728,7 @@ function RangeField({
   step: number
   testIdPrefix: string
 }): JSX.Element {
+  const { t } = useTranslation()
   const invalid = value[0] > value[1]
   return (
     <div className="form-group">

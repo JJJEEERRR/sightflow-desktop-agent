@@ -1,7 +1,7 @@
 import { JSX } from 'react'
+import { useTranslation } from 'react-i18next'
 import { NavLink, Outlet, useLocation } from 'react-router-dom'
 import logoUrl from '../assets/logo.png'
-import { t } from '../i18n'
 import { useEngineSubscription } from '../hooks/useEngineSubscription'
 import { useSettingsBootstrap } from '../hooks/useSettingsBootstrap'
 import { useEngineStore, type EngineStatus } from '../stores/engine'
@@ -39,6 +39,7 @@ export function AppLayout(): JSX.Element {
 }
 
 function RouteTitle(): JSX.Element | null {
+  const { t } = useTranslation()
   const { pathname } = useLocation()
   if (pathname === '/diagnostics') {
     return <span className="app-header-title">{t('diag.title')}</span>
@@ -56,8 +57,9 @@ function RouteTitle(): JSX.Element | null {
  * larger status indicator.
  */
 function StatusPill(): JSX.Element {
+  const { t } = useTranslation()
   const status = useEngineStore((s) => s.status)
-  const label = labelFor(status)
+  const label = labelFor(status, t)
   return (
     <span
       className="app-header-status"
@@ -78,7 +80,9 @@ function StatusPill(): JSX.Element {
   )
 }
 
-function labelFor(status: EngineStatus): string {
+type TFunction = ReturnType<typeof useTranslation>['t']
+
+function labelFor(status: EngineStatus, t: TFunction): string {
   if (status === 'running') return t('status.running')
   if (status === 'error') return t('status.error')
   return t('status.idle')
@@ -92,6 +96,7 @@ function labelFor(status: EngineStatus): string {
  * tab style still applies.
  */
 function BottomNav(): JSX.Element {
+  const { t } = useTranslation()
   return (
     <nav className="bottom-bar" aria-label="primary">
       <NavLink to="/" end className={navClassName} aria-label={t('control.status')}>

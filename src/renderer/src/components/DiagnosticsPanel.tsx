@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState, JSX } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { t } from '../i18n'
+import { useTranslation } from 'react-i18next'
 import { ipc } from '../lib/ipc'
 import type {
   LifecycleEvent,
@@ -61,6 +61,7 @@ interface DiagnosticsPanelProps {
  *  - `diag:export` is a one-shot mutation via `useMutation`.
  */
 export function DiagnosticsPanel({ onToast }: DiagnosticsPanelProps): JSX.Element {
+  const { t } = useTranslation()
   const queryClient = useQueryClient()
   const [transitions, setTransitions] = useState<LifecycleEvent[]>([])
   const [levelFilter, setLevelFilter] = useState<LogLevel | 'all'>('all')
@@ -184,7 +185,7 @@ export function DiagnosticsPanel({ onToast }: DiagnosticsPanelProps): JSX.Elemen
     // Mirrors the IPC button's "<phrase>: <destination>" pattern so both
     // local-Blob and main-process zip exports read consistently.
     onToast?.(`${t('diag.export.success')}: ${filename}`, 'success')
-  }, [logs, snapshot, transitions, onToast])
+  }, [logs, snapshot, transitions, onToast, t])
 
   // Triggers the main-side `diag:export` handler (Track A) which writes a zip
   // to disk containing logs + config + state snapshot. The renderer never
@@ -332,6 +333,7 @@ function DownloadIcon(): JSX.Element {
 // ── Sub-components ─────────────────────────────────────────────────────────
 
 function LifecycleCard({ snapshot }: { snapshot: LifecycleSnapshot | null }): JSX.Element {
+  const { t } = useTranslation()
   if (!snapshot) {
     return (
       <div className="diag-lifecycle-empty">

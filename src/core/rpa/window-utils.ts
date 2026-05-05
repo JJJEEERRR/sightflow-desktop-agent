@@ -12,12 +12,9 @@ async function getOpenWindowsSafe(): Promise<any[]> {
     const timeoutPromise = new Promise((_, reject) => {
       setTimeout(() => reject(new Error('active-win getOpenWindows timeout')), 5000)
     })
-    
+
     // 如果系统没有给权限，activeWin在某些版本可能卡死，强制5秒超时
-    const windows = await Promise.race([
-      activeWin.getOpenWindows(),
-      timeoutPromise
-    ])
+    const windows = await Promise.race([activeWin.getOpenWindows(), timeoutPromise])
     return windows as any[]
   } catch (err: any) {
     console.error('[window-utils] getOpenWindowsSafe error or timeout:', err.message)
@@ -69,12 +66,15 @@ type PlatformWindow = {
 
 async function getWechatWindowInWin(appType: AppType): Promise<PlatformWindow | null> {
   try {
+    // Runtime require: node-window-manager is a native add-on; same reasoning as util.ts#getRobot.
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
     const { windowManager } = require('node-window-manager')
-    let activeWechatWindow = windowManager.getActiveWindow()
+    const activeWechatWindow = windowManager.getActiveWindow()
     if (activeWechatWindow && matchWechatType(activeWechatWindow.getTitle(), appType)) {
       return activeWechatWindow
     }
-    const foundWindow = windowManager.getWindows()
+    const foundWindow = windowManager
+      .getWindows()
       ?.find((window: any) => matchWechatType(window.getTitle(), appType) && window.isVisible())
     return foundWindow || null
   } catch (err: any) {
@@ -106,10 +106,18 @@ function getWindowBounds(window: PlatformWindow): {
   return null
 }
 
-function validateWindowBounds(bounds: { x?: number; y?: number; width?: number; height?: number } | null): bounds is { x: number; y: number; width: number; height: number } {
+function validateWindowBounds(
+  bounds: { x?: number; y?: number; width?: number; height?: number } | null
+): bounds is { x: number; y: number; width: number; height: number } {
   if (!bounds) return false
-  if (bounds.x === undefined || bounds.y === undefined || !bounds.width || !bounds.height ||
-     (bounds.width && bounds.width < 100) || (bounds.height && bounds.height < 100)) {
+  if (
+    bounds.x === undefined ||
+    bounds.y === undefined ||
+    !bounds.width ||
+    !bounds.height ||
+    (bounds.width && bounds.width < 100) ||
+    (bounds.height && bounds.height < 100)
+  ) {
     return false
   }
   const isVisible = bounds.width > 0 && bounds.height > 0
@@ -136,7 +144,11 @@ export async function getWechatWindowInfo(appType: AppType) {
 
   const queryPromise = (async () => {
     try {
-      const wechatWindow = IS_WINDOWS ? await getWechatWindowInWin(appType) : IS_MAC ? await getWechatWindowInMac(appType) : null
+      const wechatWindow = IS_WINDOWS
+        ? await getWechatWindowInWin(appType)
+        : IS_MAC
+          ? await getWechatWindowInMac(appType)
+          : null
       if (!wechatWindow) return null
 
       const bounds = getWindowBounds(wechatWindow)
@@ -169,7 +181,10 @@ export async function getWechatWindowInfo(appType: AppType) {
   return queryPromise
 }
 
-export const getWindowInfo = async (appType: AppType = 'weixin', includeScreenshot: boolean = true) => {
+export const getWindowInfo = async (
+  appType: AppType = 'weixin',
+  includeScreenshot: boolean = true
+) => {
   if (!includeScreenshot) {
     const result = await getWechatWindowInfo(appType)
     if (!result) return null
@@ -217,4 +232,3 @@ export function getWindowInfoSync(appType: AppType): {
     scaleFactor: cached.result.display?.scaleFactor || 1
   }
 }
-

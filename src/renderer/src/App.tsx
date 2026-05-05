@@ -27,14 +27,28 @@ const StopIcon = () => (
 )
 
 const GearIcon = () => (
-  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+  <svg
+    viewBox="0 0 24 24"
+    fill="none"
+    stroke="currentColor"
+    strokeWidth="1.8"
+    strokeLinecap="round"
+    strokeLinejoin="round"
+  >
     <circle cx="12" cy="12" r="3" />
     <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" />
   </svg>
 )
 
 const BackIcon = () => (
-  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+  <svg
+    viewBox="0 0 24 24"
+    fill="none"
+    stroke="currentColor"
+    strokeWidth="2"
+    strokeLinecap="round"
+    strokeLinejoin="round"
+  >
     <path d="M19 12H5M12 19l-7-7 7-7" />
   </svg>
 )
@@ -68,11 +82,7 @@ function App() {
       </div>
 
       {view === 'control' && (
-        <BottomBar
-          status={status}
-          setStatus={setStatus}
-          onSettings={() => setView('settings')}
-        />
+        <BottomBar status={status} setStatus={setStatus} onSettings={() => setView('settings')} />
       )}
 
       <Toast />
@@ -351,7 +361,6 @@ function SettingsPanel() {
           </button>
         </div>
       </div>
-
     </div>
   )
 }
@@ -369,7 +378,7 @@ function Toast() {
   const [type, setType] = useState<'success' | 'error'>('success')
   const timerRef = useRef<number | undefined>(undefined)
 
-  _showToast = useCallback((msg: string, t: 'success' | 'error') => {
+  const handleShow = useCallback((msg: string, t: 'success' | 'error') => {
     setMessage(msg)
     setType(t)
     setVisible(true)
@@ -377,9 +386,17 @@ function Toast() {
     timerRef.current = window.setTimeout(() => setVisible(false), 2500)
   }, [])
 
-  return (
-    <div className={`toast ${type} ${visible ? 'show' : ''}`}>{message}</div>
-  )
+  // Wire up the module-level imperative entrypoint so callers outside the
+  // component tree (showToast helper) can trigger a toast. We bind in an effect
+  // (not during render) and clean up on unmount, so React purity rules hold.
+  useEffect(() => {
+    _showToast = handleShow
+    return () => {
+      if (_showToast === handleShow) _showToast = null
+    }
+  }, [handleShow])
+
+  return <div className={`toast ${type} ${visible ? 'show' : ''}`}>{message}</div>
 }
 
 export default App

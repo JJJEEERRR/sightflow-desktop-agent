@@ -17,10 +17,9 @@ export interface AgentHooks {
   }): AsyncIterable<ActionResult>
 
   // === 调度：外部系统注册触发器（定时任务等） ===
-  onExternalTrigger?(callback: (params: {
-    actions: ActionItem[]
-    targets?: string[]
-  }) => void): void
+  onExternalTrigger?(
+    callback: (params: { actions: ActionItem[]; targets?: string[] }) => void
+  ): void
 
   // === 回调 ===
   onActionComplete?(action: ActionItem, result: { success: boolean }): void
@@ -29,9 +28,9 @@ export interface AgentHooks {
 
 // 通用消息上下文
 export interface MessageContext {
-  screenshot: string        // base64 截图
-  currentContact?: string   // 当前对话人
-  ocrText?: string          // OCR 识别文字
+  screenshot: string // base64 截图
+  currentContact?: string // 当前对话人
+  ocrText?: string // OCR 识别文字
 }
 
 // 通用回复动作（不暴露任何后端私有协议）

@@ -111,11 +111,11 @@ app.whenReady().then(async () => {
           mainWindow.webContents.send('engine:log', { type, content })
         }
       })
-      
+
       engine.start().catch((err: any) => {
         console.error('[Main] Engine loop error:', err)
       })
-      
+
       return { success: true }
     } catch (error: any) {
       return { success: false, error: error?.message || String(error) }
@@ -136,7 +136,7 @@ app.whenReady().then(async () => {
     if (localHooks) {
       localHooks.updateAIConfig(config)
       if (engine && config.appType) {
-        (engine as any).device?.setAppType(config.appType)
+        ;(engine as any).device?.setAppType(config.appType)
       }
       return { success: true }
     }

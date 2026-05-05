@@ -1,0 +1,25 @@
+# Force LF line endings for text files across all platforms.
+# This matches the project's .editorconfig (end_of_line = lf) and Prettier defaults.
+
+* text=auto eol=lf
+
+# Binary files (never modify line endings)
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.icns binary
+*.woff binary
+*.woff2 binary
+*.ttf binary
+*.eot binary
+*.otf binary
+*.zip binary
+*.gz binary
+*.7z binary
+*.exe binary
+*.dll binary
+*.dylib binary
+*.so binary
+*.node binary

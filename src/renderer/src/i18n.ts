@@ -38,7 +38,8 @@ const translations = {
     'settings.baseURL': 'Base URL',
     'settings.baseURL.placeholder': 'https://ark.cn-beijing.volces.com/api/v3',
     'settings.systemPrompt': 'System Prompt',
-    'settings.systemPrompt.placeholder': '你是一个微信自动回复助手。根据截图中的聊天内容，生成合适的回复...',
+    'settings.systemPrompt.placeholder':
+      '你是一个微信自动回复助手。根据截图中的聊天内容，生成合适的回复...',
     'settings.testConnection': '测试连接',
     'settings.testConnection.testing': '测试中...',
     'settings.testConnection.success': '连接成功',
@@ -52,7 +53,7 @@ const translations = {
     // Toast
     'toast.engineStarted': '引擎已启动',
     'toast.engineStopped': '引擎已停止',
-    'toast.startFailed': '启动失败',
+    'toast.startFailed': '启动失败'
   },
   en: {
     'app.title': 'SightFlow Desktop',
@@ -97,11 +98,11 @@ const translations = {
 
     'toast.engineStarted': 'Engine started',
     'toast.engineStopped': 'Engine stopped',
-    'toast.startFailed': 'Failed to start',
+    'toast.startFailed': 'Failed to start'
   }
 } as const
 
-type TranslationKey = keyof typeof translations['zh']
+type TranslationKey = keyof (typeof translations)['zh']
 
 let currentLocale: Locale = 'zh'
 

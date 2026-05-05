@@ -18,7 +18,6 @@ export class Engine {
   private consecutiveUnreadFailures = 0
 
   constructor(
-
     private hooks: AgentHooks,
     private device: DesktopDevice,
     private onLog?: (type: string, content: string) => void
@@ -158,7 +157,10 @@ export class Engine {
         continue
       }
 
-      this.emitLog('thinking', `检测到未读消息，点击红点区域 (${redDotCoordinates[0]}, ${redDotCoordinates[1]})`)
+      this.emitLog(
+        'thinking',
+        `检测到未读消息，点击红点区域 (${redDotCoordinates[0]}, ${redDotCoordinates[1]})`
+      )
       await this.device.activeUnreadByClick(redDotCoordinates)
       await this.sleep(150 + Math.random() * 100)
 
@@ -194,7 +196,10 @@ export class Engine {
         this.consecutiveUnreadFailures++
 
         if (this.consecutiveUnreadFailures >= 3) {
-          this.emitLog('thinking', `连续 ${this.consecutiveUnreadFailures} 次检测失败，VLM 坐标缓存可能不准确，清除缓存强制重检`)
+          this.emitLog(
+            'thinking',
+            `连续 ${this.consecutiveUnreadFailures} 次检测失败，VLM 坐标缓存可能不准确，清除缓存强制重检`
+          )
           this.device.clearUnreadCache()
           this.consecutiveUnreadFailures = 0 // 重置
           await this.sleep(500)
@@ -225,7 +230,10 @@ export class Engine {
             }
           }
         } else {
-          this.emitLog('skip', `细检测失败 (第 ${this.consecutiveUnreadFailures} 次)，暂不清除缓存，继续轮询`)
+          this.emitLog(
+            'skip',
+            `细检测失败 (第 ${this.consecutiveUnreadFailures} 次)，暂不清除缓存，继续轮询`
+          )
           continue
         }
       }
@@ -260,10 +268,9 @@ export class Engine {
         case 'text':
           this.emitLog('reply', `[回复] ${action.content}`)
           await this.device.sendMessage(action.content)
-          this.hooks.onActionComplete?.(
-            { type: 'text', content: action.content } as ActionItem,
-            { success: true }
-          )
+          this.hooks.onActionComplete?.({ type: 'text', content: action.content } as ActionItem, {
+            success: true
+          })
           break
         case 'image':
           // TODO: 图片发送
@@ -281,10 +288,7 @@ export class Engine {
     }
   }
 
-  private async executeExternalActions(params: {
-    actions: ActionItem[]
-    targets?: string[]
-  }) {
+  private async executeExternalActions(params: { actions: ActionItem[]; targets?: string[] }) {
     if (this.hooks.executeActions) {
       for await (const result of this.hooks.executeActions(params)) {
         console.log('[Engine] External action result:', result)
@@ -293,6 +297,6 @@ export class Engine {
   }
 
   private sleep(ms: number) {
-    return new Promise(resolve => setTimeout(resolve, ms))
+    return new Promise((resolve) => setTimeout(resolve, ms))
   }
 }

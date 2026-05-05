@@ -6,8 +6,8 @@ import { checkAndRequestPermissions } from './permission'
 import Store from 'electron-store'
 import { Engine } from '../core/engine'
 import { LocalHooks } from '../core/local-hooks'
-import { AIClient, type AIClientConfig } from '../core/ai-client'
 import { RPADevice } from '../core/rpa-device'
+import { VlmBrain, OpenAICompatProvider, type AgentBrain, type BrainConfig } from '../core/brain'
 import type { AppType } from '../core/rpa/types'
 import {
   configureLogger,
@@ -38,7 +38,7 @@ interface EngineStartConfig {
 }
 
 let engine: Engine | null = null
-let localHooks: LocalHooks | null = null
+let currentBrain: AgentBrain | null = null
 let powerSaveBlockerId: number | null = null
 let unsubscribeLifecycle: (() => void) | null = null
 
@@ -158,23 +158,32 @@ app.whenReady().then(async () => {
   ipcMain.handle('engine:start', async (_event, config: EngineStartConfig) => {
     if (engine?.isRunning()) return { success: false, error: '引擎已在运行中' }
     try {
-      localHooks = new LocalHooks({
-        ai: {
-          apiKey: config.apiKey,
-          model: config.model,
-          baseURL: config.baseURL,
-          systemPrompt: config.systemPrompt
-        }
+      // Phase 2: brain owns the decision pipeline; provider wraps the LLM.
+      const provider = new OpenAICompatProvider({
+        apiKey: config.apiKey,
+        ...(config.model !== undefined ? { model: config.model } : {}),
+        ...(config.baseURL !== undefined ? { baseURL: config.baseURL } : {})
       })
+      currentBrain = new VlmBrain({
+        provider,
+        ...(config.systemPrompt !== undefined && config.systemPrompt.length > 0
+          ? { systemPrompt: config.systemPrompt }
+          : {})
+      })
+
+      const localHooks = new LocalHooks()
       const device = new RPADevice()
       device.setAppType(config.appType || 'weixin')
       device.setApiKey(config.apiKey)
       const mainWindow = BrowserWindow.getAllWindows()[0]
-      engine = new Engine(localHooks, device, (type, content) => {
+      engine = new Engine(currentBrain, device, localHooks, (type, content) => {
         if (mainWindow && !mainWindow.isDestroyed()) {
           mainWindow.webContents.send('engine:log', { type, content })
         }
       })
+      // App-type stays in the engine so BrainContext.appType is correct from
+      // tick 1 (before any setAppType IPC roundtrip).
+      engine.setAppType(config.appType || 'weixin')
 
       // Subscribe to lifecycle transitions: forward to renderer over a
       // dedicated channel, and gate the powerSaveBlocker on the running state.
@@ -241,9 +250,9 @@ app.whenReady().then(async () => {
 
   ipcMain.handle(
     'engine:updateConfig',
-    async (_event, config: Partial<AIClientConfig> & { appType?: AppType }) => {
-      if (localHooks) {
-        localHooks.updateAIConfig(config)
+    async (_event, config: Partial<BrainConfig> & { appType?: AppType }) => {
+      if (currentBrain) {
+        currentBrain.updateConfig(config)
         if (engine && config.appType) {
           engine.setAppType(config.appType)
         }
@@ -255,9 +264,16 @@ app.whenReady().then(async () => {
 
   ipcMain.handle(
     'engine:testConnection',
-    async (_event, config: Partial<AIClientConfig> & { apiKey: string }) => {
-      const client = new AIClient(config)
-      return client.testConnection()
+    async (_event, config: Partial<BrainConfig> & { apiKey: string }) => {
+      // Build a temporary provider so the user can validate credentials
+      // before the engine ever spins up. We don't reuse `currentBrain`
+      // because it may not exist yet (first run / settings page).
+      const provider = new OpenAICompatProvider({
+        apiKey: config.apiKey,
+        ...(config.model !== undefined ? { model: config.model } : {}),
+        ...(config.baseURL !== undefined ? { baseURL: config.baseURL } : {})
+      })
+      return provider.testConnection()
     }
   )
 

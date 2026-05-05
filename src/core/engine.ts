@@ -10,10 +10,12 @@
 //    → 有未读: 视觉点击红点 → 细检测联系人 → 点击联系人，回到步骤 3
 //    → 无未读: 轮询等待，直到新消息出现
 
-import { AgentHooks, ReplyAction, ActionItem } from './hooks'
+import { AgentHooks, ActionItem } from './hooks'
 import { DesktopDevice } from './device'
 import { getLogger, newTraceId, type Logger } from './observability'
 import { Lifecycle, type LifecycleState } from './runtime'
+import type { AgentBrain, BrainContext, BrainDecision } from './brain'
+import type { AppType } from './rpa/types'
 
 export class Engine {
   private running = false
@@ -21,10 +23,17 @@ export class Engine {
   private readonly log: Logger
   private readonly lifecycle: Lifecycle
   private currentTraceId: string | undefined
+  private currentAppType: AppType = 'weixin'
 
+  /**
+   * Phase 2 constructor signature: `brain` is the decision-making component
+   * (replaces the former `hooks.getReply`). `hooks` is now optional and only
+   * carries lifecycle/error/external-trigger callbacks.
+   */
   constructor(
-    private hooks: AgentHooks,
+    private brain: AgentBrain,
     private device: DesktopDevice,
+    private hooks: AgentHooks = {},
     private onLog?: (type: string, content: string) => void,
     lifecycle?: Lifecycle
   ) {
@@ -142,29 +151,45 @@ export class Engine {
   /**
    * Allow external orchestrators (e.g. the main-process IPC handlers) to update
    * the engine's target application type without reaching into private fields.
+   * Engine also keeps a local copy so the value can be plumbed into
+   * `BrainContext` without round-tripping through the device.
    */
-  setAppType(appType: Parameters<DesktopDevice['setAppType']>[0]): void {
+  setAppType(appType: AppType): void {
+    this.currentAppType = appType
     this.device.setAppType(appType)
   }
 
   // ── Step 3+4: 发图 → 回复 ──
 
   /**
-   * 处理当前对话：截图 → AI 分析 → RPA 执行回复 → 设置 diff baseline
+   * 处理当前对话：截图 → brain 决策 → RPA 执行回复 → 设置 diff baseline
+   *
+   * Phase 2 起，"看到截图、决定怎么回复" 的职责完全交给 `AgentBrain`。
+   * 引擎只负责：
+   *   - 截图、把上下文打包成 `BrainContext`
+   *   - 把 brain 流式输出的 `thinking` / `decision` 路由到 emitLog / 设备调用
+   *   - 维护 chatMainArea diff baseline
    */
   private async processCurrentChat(): Promise<void> {
-    // 发图
     const screenshot = await this.device.screenshot()
     this.emitLog('thinking', '截图完成，请求 AI 分析...')
 
-    // 回复
-    for await (const action of this.hooks.getReply({ screenshot })) {
-      if (!this.running) break
-      await this.executeAction(action)
+    const ctx: BrainContext = {
+      appType: this.currentAppType,
+      screenshot,
+      traceId: this.currentTraceId
     }
 
-    // 回复完成后，保存 chatMainArea 截图作为 diff baseline
-    // 这样后续轮询时可以检测当前对话窗口是否有新消息
+    for await (const stream of this.brain.decide(ctx)) {
+      if (!this.running) break
+      if (stream.thinking) {
+        this.emitLog('thinking', stream.thinking)
+      }
+      if (stream.decision) {
+        await this.executeDecision(stream.decision)
+      }
+    }
+
     if (this.running) {
       await this.device.setChatBaseline()
     }
@@ -323,26 +348,20 @@ export class Engine {
     }
   }
 
-  // ── 执行动作 ──
+  // ── 执行 brain 决策 ──
 
-  private async executeAction(action: ReplyAction): Promise<void> {
+  private async executeDecision(decision: BrainDecision): Promise<void> {
     try {
-      switch (action.type) {
-        case 'text':
-          this.emitLog('reply', `[回复] ${action.content}`)
-          await this.device.sendMessage(action.content)
-          this.hooks.onActionComplete?.({ type: 'text', content: action.content } as ActionItem, {
+      switch (decision.type) {
+        case 'reply':
+          this.emitLog('reply', `[回复] ${decision.text}`)
+          await this.device.sendMessage(decision.text)
+          this.hooks.onActionComplete?.({ type: 'text', content: decision.text } as ActionItem, {
             success: true
           })
           break
-        case 'image':
-          // TODO: 图片发送
-          break
-        case 'thinking':
-          this.emitLog('thinking', action.content)
-          break
         case 'skip':
-          this.emitLog('skip', '跳过回复')
+          this.emitLog('skip', decision.reason ? `跳过：${decision.reason}` : '跳过回复')
           break
       }
     } catch (e) {

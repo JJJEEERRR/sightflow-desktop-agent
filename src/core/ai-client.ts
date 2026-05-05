@@ -138,16 +138,17 @@ export class AIClient {
     return this.config.apiKey
   }
 
-  // ── 内部方法 ──
+  // ── 内部方法（部分公开供 brain provider 使用） ──
 
   /**
-   * 视觉调用：system prompt + 用户文本 + 图片
+   * 视觉调用：system prompt + 用户文本 + 图片。
+   *
+   * Public since Phase 2 so `OpenAICompatProvider` (in `core/brain/providers/`)
+   * can wrap it cleanly. Both `getReply` (chat reply) and the brain provider
+   * funnel through this method, so the timeout/abort/observability story
+   * stays in one place.
    */
-  private async callVision(
-    systemPrompt: string,
-    userText: string,
-    imageBase64: string
-  ): Promise<string> {
+  async callVision(systemPrompt: string, userText: string, imageBase64: string): Promise<string> {
     const rawBase64 = this.stripBase64Prefix(imageBase64)
     const imageUrl = rawBase64.startsWith('http') ? rawBase64 : `data:image/png;base64,${rawBase64}`
 

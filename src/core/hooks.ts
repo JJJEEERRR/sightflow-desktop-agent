@@ -1,14 +1,13 @@
 // src/core/hooks.ts
-// AgentHooks — 插件系统的契约
-// 所有插件（包括未来的商业插件）都实现这个接口。
+// AgentHooks — 引擎对外的回调集合（生命周期 / 错误 / 外部触发）。
+//
+// Phase 2 起，"看到截图 → 决定怎么回复" 的职责迁移到 `core/brain/AgentBrain`。
+// Hooks 只保留与 brain 无关的回调点，方便插件挂载日志、指标、外部任务调度等。
 
 export interface AgentHooks {
   // === 生命周期 ===
   onEngineStart?(): Promise<void>
   onEngineStop?(): Promise<void>
-
-  // === 被动：检测到新消息后，决定怎么回复 ===
-  getReply(context: MessageContext): AsyncIterable<ReplyAction>
 
   // === 主动：外部触发执行一组操作 ===
   executeActions?(params: {
@@ -26,14 +25,13 @@ export interface AgentHooks {
   onError?(error: Error, phase: string): void
 }
 
-// 通用消息上下文
+// 通用消息上下文。Phase 2 之后供历史/调试用途，不再驱动 brain 决策。
 export interface MessageContext {
   screenshot: string // base64 截图
-  currentContact?: string // 当前对话人
-  ocrText?: string // OCR 识别文字
+  currentContact?: string
 }
 
-// 通用回复动作（不暴露任何后端私有协议）
+// 通用回复动作（保留以便 executeActions 复用）
 export type ReplyAction =
   | { type: 'text'; content: string }
   | { type: 'image'; url: string }

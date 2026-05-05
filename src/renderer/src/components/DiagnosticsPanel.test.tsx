@@ -179,7 +179,10 @@ describe('DiagnosticsPanel ??live IPC streams', () => {
     })
 
     // The transition row renders both ends of the arrow as state pills.
-    expect(document.querySelectorAll('.diag-transition .diag-state-pill').length).toBe(2)
+    // Phase 5 PR4 replaced the `.diag-transition .diag-state-pill` CSS
+    // hooks with `data-testid="diag-state-pill"` so the assertion works
+    // against the new Tailwind/shadcn DOM.
+    expect(screen.getAllByTestId('diag-state-pill').length).toBe(2)
   })
 })
 

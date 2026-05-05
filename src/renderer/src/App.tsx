@@ -1,6 +1,7 @@
 import { useState, useCallback, useRef, useEffect, JSX } from 'react'
 import { t, type TranslationKey } from './i18n'
 import logoUrl from './assets/logo.png'
+import { DiagnosticsPanel } from './components/DiagnosticsPanel'
 import './index.css'
 
 // ─── Types ───
@@ -11,7 +12,7 @@ interface LogEntry {
 }
 
 type EngineStatus = 'idle' | 'running' | 'error'
-type View = 'control' | 'settings'
+type View = 'control' | 'settings' | 'diagnostics'
 type AppKind = 'weixin' | 'wework'
 
 interface AppSettings {
@@ -79,6 +80,19 @@ const BackIcon = (): JSX.Element => (
   </svg>
 )
 
+const ActivityIcon = (): JSX.Element => (
+  <svg
+    viewBox="0 0 24 24"
+    fill="none"
+    stroke="currentColor"
+    strokeWidth="1.8"
+    strokeLinecap="round"
+    strokeLinejoin="round"
+  >
+    <polyline points="22 12 18 12 15 21 9 3 6 12 2 12" />
+  </svg>
+)
+
 // ─── App ───
 function App(): JSX.Element {
   const [view, setView] = useState<View>('control')
@@ -87,28 +101,39 @@ function App(): JSX.Element {
   return (
     <div className="app">
       <header className="app-header">
-        {view === 'settings' ? (
+        {view !== 'control' ? (
           <button
             className="bottom-btn bottom-btn-settings"
-            onClick={() => setView('control')}
+            onClick={(): void => setView('control')}
+            aria-label="back"
             style={{ width: 32, height: 32, marginRight: 4 }}
           >
             <BackIcon />
           </button>
         ) : null}
         <img src={logoUrl} alt="SightFlow" className="app-logo" />
+        {view === 'diagnostics' ? (
+          <span className="app-header-title">{t('diag.title')}</span>
+        ) : null}
       </header>
 
       <div className="app-content">
         {view === 'control' ? (
           <ControlPanel status={status} setStatus={setStatus} />
-        ) : (
+        ) : view === 'settings' ? (
           <SettingsPanel />
+        ) : (
+          <DiagnosticsPanel onToast={showToast} />
         )}
       </div>
 
       {view === 'control' && (
-        <BottomBar status={status} setStatus={setStatus} onSettings={() => setView('settings')} />
+        <BottomBar
+          status={status}
+          setStatus={setStatus}
+          onSettings={(): void => setView('settings')}
+          onDiagnostics={(): void => setView('diagnostics')}
+        />
       )}
 
       <Toast />
@@ -191,11 +216,13 @@ function ControlPanel({
 function BottomBar({
   status,
   setStatus,
-  onSettings
+  onSettings,
+  onDiagnostics
 }: {
   status: EngineStatus
   setStatus: (s: EngineStatus) => void
   onSettings: () => void
+  onDiagnostics: () => void
 }): JSX.Element {
   const handleStart = useCallback(async () => {
     const settings = await window.electron?.invoke<AppSettings | undefined>('settings:getAll')
@@ -242,6 +269,13 @@ function BottomBar({
           <PlayIcon />
         </button>
       )}
+      <button
+        className="bottom-btn bottom-btn-settings"
+        onClick={onDiagnostics}
+        aria-label={t('diag.title')}
+      >
+        <ActivityIcon />
+      </button>
       <button className="bottom-btn bottom-btn-settings" onClick={onSettings}>
         <GearIcon />
       </button>

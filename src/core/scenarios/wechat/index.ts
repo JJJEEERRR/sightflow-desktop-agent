@@ -1,0 +1,1 @@
+export { WechatScenario } from './scenario'

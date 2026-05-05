@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { Engine } from './engine'
+import { MockScenario } from './mock-scenario'
 import type { AgentHooks, ReplyAction } from './hooks'
 import type { DesktopDevice } from './device'
 import type { AppType } from './rpa/types'
@@ -168,7 +169,9 @@ describe('Engine lifecycle — startup failures', () => {
     const hooks = makeFakeHooks()
     const logs: Array<[string, string]> = []
 
-    const engine = new Engine(brain, device, hooks, (type, content) => logs.push([type, content]))
+    const engine = new Engine(brain, new MockScenario(device), hooks, (type, content) =>
+      logs.push([type, content])
+    )
     await engine.start()
 
     expect(state.calls).toEqual(['measureLayout'])
@@ -198,7 +201,7 @@ describe('Engine main loop — single cycle', () => {
     const brain = makeFakeBrain([[{ type: 'text', content: 'hi back' }]])
     const hooks = makeFakeHooks()
 
-    const engine = new Engine(brain, device, hooks)
+    const engine = new Engine(brain, new MockScenario(device), hooks)
     const startPromise = engine.start()
 
     // Let measure + first reply cycle complete. The loop then enters
@@ -239,7 +242,7 @@ describe('Engine main loop — single cycle', () => {
     const brain = makeFakeBrain([[{ type: 'skip' }]])
     const hooks = makeFakeHooks()
 
-    const engine = new Engine(brain, device, hooks)
+    const engine = new Engine(brain, new MockScenario(device), hooks)
     const p = engine.start()
     await vi.advanceTimersByTimeAsync(50)
     await vi.advanceTimersByTimeAsync(6000)
@@ -275,7 +278,7 @@ describe('Engine waitForNextUnread — diff channel', () => {
     ])
     const hooks = makeFakeHooks()
 
-    const engine = new Engine(brain, device, hooks)
+    const engine = new Engine(brain, new MockScenario(device), hooks)
     const p = engine.start()
     // Allow many polling rounds to complete.
     await vi.advanceTimersByTimeAsync(50)
@@ -312,7 +315,7 @@ describe('Engine waitForNextUnread — unread red-dot channel', () => {
     ])
     const hooks = makeFakeHooks()
 
-    const engine = new Engine(brain, device, hooks)
+    const engine = new Engine(brain, new MockScenario(device), hooks)
     const p = engine.start()
     await vi.advanceTimersByTimeAsync(50)
     await vi.advanceTimersByTimeAsync(15_000)
@@ -361,7 +364,7 @@ describe('Engine waitForNextUnread — unread red-dot channel', () => {
     const brain = makeFakeBrain([[{ type: 'skip' }]])
     const hooks = makeFakeHooks()
 
-    const engine = new Engine(brain, device, hooks)
+    const engine = new Engine(brain, new MockScenario(device), hooks)
     const p = engine.start()
     await vi.advanceTimersByTimeAsync(50)
     await vi.advanceTimersByTimeAsync(60_000)
@@ -389,7 +392,7 @@ describe('Engine.executeAction', () => {
     const brain = makeFakeBrain([[{ type: 'text', content: 'will fail' }]])
     const hooks = makeFakeHooks()
 
-    const engine = new Engine(brain, device, hooks)
+    const engine = new Engine(brain, new MockScenario(device), hooks)
     const p = engine.start()
     await vi.advanceTimersByTimeAsync(50)
     await vi.advanceTimersByTimeAsync(6_000)
@@ -419,7 +422,7 @@ describe('Engine.setAppType', () => {
     const device = makeFakeDevice(state)
     const brain = makeFakeBrain([])
     const hooks = makeFakeHooks()
-    const engine = new Engine(brain, device, hooks)
+    const engine = new Engine(brain, new MockScenario(device), hooks)
 
     engine.setAppType('wework')
     expect(state.calls).toContain('setAppType(wework)')
@@ -443,7 +446,7 @@ describe('Engine.lifecycle integration', () => {
     const events: LifecycleEvent[] = []
     lifecycle.subscribe((e) => events.push(e))
 
-    const engine = new Engine(brain, device, hooks, undefined, lifecycle)
+    const engine = new Engine(brain, new MockScenario(device), hooks, undefined, lifecycle)
     expect(lifecycle.getState()).toBe('idle')
 
     const p = engine.start()
@@ -476,7 +479,7 @@ describe('Engine.lifecycle integration', () => {
     const events: LifecycleEvent[] = []
     lifecycle.subscribe((e) => events.push(e))
 
-    const engine = new Engine(brain, device, hooks, undefined, lifecycle)
+    const engine = new Engine(brain, new MockScenario(device), hooks, undefined, lifecycle)
     await engine.start()
 
     expect(lifecycle.getState()).toBe('crashed')
@@ -498,7 +501,7 @@ describe('Engine.lifecycle integration', () => {
     const brain = makeFakeBrain([])
     const hooks = makeFakeHooks()
     const lifecycle = new Lifecycle()
-    const engine = new Engine(brain, device, hooks, undefined, lifecycle)
+    const engine = new Engine(brain, new MockScenario(device), hooks, undefined, lifecycle)
 
     const p1 = engine.start()
     await vi.advanceTimersByTimeAsync(10)
@@ -541,7 +544,7 @@ describe('Engine.lifecycle integration', () => {
     const events: LifecycleEvent[] = []
     lifecycle.subscribe((e) => events.push(e))
 
-    const engine = new Engine(brain, device, hooks, undefined, lifecycle)
+    const engine = new Engine(brain, new MockScenario(device), hooks, undefined, lifecycle)
     const p = engine.start()
     await vi.advanceTimersByTimeAsync(50)
     expect(lifecycle.getState()).toBe('running')
@@ -577,7 +580,7 @@ describe('Engine.lifecycle integration', () => {
     const events: LifecycleEvent[] = []
     lifecycle.subscribe((e) => events.push(e))
 
-    const engine = new Engine(brain, device, hooks, undefined, lifecycle)
+    const engine = new Engine(brain, new MockScenario(device), hooks, undefined, lifecycle)
     await engine.start()
 
     expect(lifecycle.getState()).toBe('crashed')
@@ -614,7 +617,7 @@ describe('Engine.brain integration', () => {
     const hooks = makeFakeHooks()
     const logs: Array<[string, string]> = []
 
-    const engine = new Engine(customBrain, device, hooks, (type, content) =>
+    const engine = new Engine(customBrain, new MockScenario(device), hooks, (type, content) =>
       logs.push([type, content])
     )
     const p = engine.start()
@@ -655,7 +658,7 @@ describe('Engine.brain integration', () => {
       updateConfig: () => {}
     }
     const hooks = makeFakeHooks()
-    const engine = new Engine(customBrain, device, hooks)
+    const engine = new Engine(customBrain, new MockScenario(device), hooks)
     engine.setAppType('wework')
 
     const p = engine.start()
@@ -706,7 +709,7 @@ describe('Engine.policy integration (Phase 3)', () => {
       getConfig: () => ({}) as ReturnType<import('./policy').AntiDetectionPolicy['getConfig']>
     } as unknown as import('./policy').AntiDetectionPolicy
 
-    const engine = new Engine(brain, device, hooks, undefined, lifecycle, policy)
+    const engine = new Engine(brain, new MockScenario(device), hooks, undefined, lifecycle, policy)
     const p = engine.start()
     await vi.advanceTimersByTimeAsync(50)
     await p
@@ -761,7 +764,7 @@ describe('Engine.policy integration (Phase 3)', () => {
       getConfig: () => ({}) as never
     } as unknown as import('./policy').AntiDetectionPolicy
 
-    const engine = new Engine(brain, device, hooks, undefined, undefined, policy)
+    const engine = new Engine(brain, new MockScenario(device), hooks, undefined, undefined, policy)
     const p = engine.start()
     await vi.advanceTimersByTimeAsync(50)
     // Let the engine run several soft-block cycles.
@@ -807,7 +810,7 @@ describe('Engine.policy integration (Phase 3)', () => {
       getConfig: () => ({}) as never
     } as unknown as import('./policy').AntiDetectionPolicy
 
-    const engine = new Engine(brain, device, hooks, undefined, undefined, policy)
+    const engine = new Engine(brain, new MockScenario(device), hooks, undefined, undefined, policy)
     const p = engine.start()
     await vi.advanceTimersByTimeAsync(50)
     await vi.advanceTimersByTimeAsync(6_000)
@@ -856,7 +859,7 @@ describe('Engine.policy integration (Phase 3)', () => {
       getConfig: () => ({}) as never
     } as unknown as import('./policy').AntiDetectionPolicy
 
-    const engine = new Engine(brain, device, hooks, undefined, undefined, policy)
+    const engine = new Engine(brain, new MockScenario(device), hooks, undefined, undefined, policy)
     const p = engine.start()
     await vi.advanceTimersByTimeAsync(50)
     await vi.advanceTimersByTimeAsync(6_000)
@@ -907,7 +910,7 @@ describe('Engine.policy integration (Phase 3)', () => {
       getConfig: () => ({}) as never
     } as unknown as import('./policy').AntiDetectionPolicy
 
-    const engine = new Engine(brain, device, hooks, undefined, undefined, policy)
+    const engine = new Engine(brain, new MockScenario(device), hooks, undefined, undefined, policy)
     const p = engine.start()
     await vi.advanceTimersByTimeAsync(50)
     // First tick captured; flip the screenshot before the next tick fires.
@@ -961,7 +964,7 @@ describe('Engine.policy integration (Phase 3)', () => {
       getConfig: () => ({}) as never
     } as unknown as import('./policy').AntiDetectionPolicy
 
-    const engine = new Engine(brain, device, hooks, undefined, undefined, policy)
+    const engine = new Engine(brain, new MockScenario(device), hooks, undefined, undefined, policy)
     const p = engine.start()
     await vi.advanceTimersByTimeAsync(50)
     await vi.advanceTimersByTimeAsync(15_000)
@@ -1064,7 +1067,15 @@ describe('Engine.policy integration (Phase 3)', () => {
     const policy = makeOcrPolicy({ ocrEnabled: false, observed })
     const ocr = makeFakeOcr()
 
-    const engine = new Engine(brain, device, hooks, undefined, undefined, policy, ocr)
+    const engine = new Engine(
+      brain,
+      new MockScenario(device),
+      hooks,
+      undefined,
+      undefined,
+      policy,
+      ocr
+    )
     const p = engine.start()
     await vi.advanceTimersByTimeAsync(50)
     await vi.advanceTimersByTimeAsync(15_000)
@@ -1099,7 +1110,16 @@ describe('Engine.policy integration (Phase 3)', () => {
     // Inject a controlled clock — first OCR call happens at t=0 (>= 1000ms
     // since lastOcrAt=0), so the gate fires immediately.
     const now = 1_000_000
-    const engine = new Engine(brain, device, hooks, undefined, undefined, policy, ocr, () => now)
+    const engine = new Engine(
+      brain,
+      new MockScenario(device),
+      hooks,
+      undefined,
+      undefined,
+      policy,
+      ocr,
+      () => now
+    )
     const p = engine.start()
     await vi.advanceTimersByTimeAsync(50)
     await vi.advanceTimersByTimeAsync(6_000)
@@ -1140,7 +1160,16 @@ describe('Engine.policy integration (Phase 3)', () => {
     const ocr = makeFakeOcr(() => '')
 
     const now = 1_000_000
-    const engine = new Engine(brain, device, hooks, undefined, undefined, policy, ocr, () => now)
+    const engine = new Engine(
+      brain,
+      new MockScenario(device),
+      hooks,
+      undefined,
+      undefined,
+      policy,
+      ocr,
+      () => now
+    )
     const p = engine.start()
     await vi.advanceTimersByTimeAsync(50)
     await vi.advanceTimersByTimeAsync(6_000)
@@ -1185,7 +1214,16 @@ describe('Engine.policy integration (Phase 3)', () => {
     // Hold the clock fixed so the second tick is well under 30s after the
     // first OCR call.
     const now = 1_000_000
-    const engine = new Engine(brain, device, hooks, undefined, undefined, policy, ocr, () => now)
+    const engine = new Engine(
+      brain,
+      new MockScenario(device),
+      hooks,
+      undefined,
+      undefined,
+      policy,
+      ocr,
+      () => now
+    )
     const p = engine.start()
     await vi.advanceTimersByTimeAsync(50)
     // Allow several diff-driven re-entries.
@@ -1220,7 +1258,7 @@ describe('Engine.policy integration (Phase 3)', () => {
     const brain = makeFakeBrain([[{ type: 'skip' }]])
     const hooks = makeFakeHooks()
 
-    const engine = new Engine(brain, device, hooks)
+    const engine = new Engine(brain, new MockScenario(device), hooks)
     const p = engine.start()
     await vi.advanceTimersByTimeAsync(50)
     await vi.advanceTimersByTimeAsync(15_000)

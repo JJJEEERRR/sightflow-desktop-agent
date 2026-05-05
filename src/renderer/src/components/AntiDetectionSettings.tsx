@@ -40,11 +40,18 @@ interface CircuitBreakerConfig {
   bannedKeywords: string[]
 }
 
+interface OcrConfig {
+  enabled: boolean
+  sampleIntervalMs: number
+  language: string
+}
+
 interface AntiDetectionConfig {
   humanizer: HumanizerConfig
   rateLimiter: RateLimiterConfig
   schedule: ScheduleConfig
   circuitBreaker: CircuitBreakerConfig
+  ocr: OcrConfig
 }
 
 interface PolicySnapshot {
@@ -197,6 +204,9 @@ export function AntiDetectionSettings({
     },
     []
   )
+  const updateOcr = useCallback(<K extends keyof OcrConfig>(key: K, value: OcrConfig[K]): void => {
+    setConfig((prev) => (prev ? { ...prev, ocr: { ...prev.ocr, [key]: value } } : prev))
+  }, [])
 
   // ── Presets ──────────────────────────────────────────────────────────────
   const applyPresetConservative = useCallback((): void => {
@@ -526,6 +536,50 @@ export function AntiDetectionSettings({
             data-testid="cb-banned-keywords"
           />
         </div>
+      </div>
+
+      <div className="card">
+        <div className="card-title">{t('policy.ocr.title')}</div>
+        <div className="form-group policy-checkbox-row">
+          <label className="policy-checkbox-label">
+            <input
+              type="checkbox"
+              checked={config.ocr.enabled}
+              onChange={(e): void => updateOcr('enabled', e.target.checked)}
+              data-testid="ocr-enabled"
+            />
+            <span>{t('policy.ocr.enabled')}</span>
+          </label>
+        </div>
+        <div className="form-group">
+          <label className="form-label">
+            {t('policy.ocr.sampleIntervalMs')}: {Math.round(config.ocr.sampleIntervalMs / 1000)}s
+          </label>
+          <input
+            className="form-input"
+            type="range"
+            min={5_000}
+            max={120_000}
+            step={1_000}
+            value={config.ocr.sampleIntervalMs}
+            onChange={(e): void => {
+              const n = Number(e.target.value)
+              if (!Number.isNaN(n)) updateOcr('sampleIntervalMs', n)
+            }}
+            data-testid="ocr-sample-interval"
+          />
+        </div>
+        <div className="form-group">
+          <label className="form-label">{t('policy.ocr.language')}</label>
+          <input
+            className="form-input"
+            type="text"
+            value={config.ocr.language}
+            onChange={(e): void => updateOcr('language', e.target.value)}
+            data-testid="ocr-language"
+          />
+        </div>
+        <div className="form-hint">{t('policy.ocr.hint')}</div>
       </div>
 
       <div className="form-actions">

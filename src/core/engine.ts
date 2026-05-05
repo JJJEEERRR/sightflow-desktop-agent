@@ -16,6 +16,7 @@ import { DesktopDevice } from './device'
 import { getLogger, newTraceId, type Logger } from './observability'
 import { Lifecycle, type LifecycleState } from './runtime'
 import type { AgentBrain, BrainContext, BrainDecision } from './brain'
+import type { OcrEngine } from './ocr'
 import type { AntiDetectionPolicy } from './policy'
 import type { AppType } from './rpa/types'
 
@@ -26,6 +27,8 @@ export class Engine {
   private readonly lifecycle: Lifecycle
   private currentTraceId: string | undefined
   private currentAppType: AppType = 'weixin'
+  private lastOcrAt = 0
+  private readonly nowFn: () => number
 
   /**
    * Phase 2 constructor signature: `brain` is the decision-making component
@@ -37,6 +40,12 @@ export class Engine {
    * device action (humanizer pre/post delays, jitter, breaker observation).
    * The argument is optional so existing tests and the Phase-2 code path keep
    * working unchanged.
+   *
+   * Phase 4 adds an optional `ocr` engine which is sample-rate-limited per
+   * `policy.config.ocr.sampleIntervalMs` and feeds the resulting text into
+   * `policy.observe({ type: 'screenText', … })`. `nowFn` is injectable so
+   * tests can drive sample-interval boundaries deterministically without
+   * faking the wall clock.
    */
   constructor(
     private brain: AgentBrain,
@@ -44,10 +53,13 @@ export class Engine {
     private hooks: AgentHooks = {},
     private onLog?: (type: string, content: string) => void,
     lifecycle?: Lifecycle,
-    private policy?: AntiDetectionPolicy
+    private policy?: AntiDetectionPolicy,
+    private ocr?: OcrEngine,
+    nowFn: () => number = (): number => Date.now()
   ) {
     this.lifecycle = lifecycle ?? new Lifecycle()
     this.log = getLogger('engine')
+    this.nowFn = nowFn
   }
 
   /**
@@ -170,6 +182,12 @@ export class Engine {
     this.running = false
     this.safeStopLifecycle()
     this.device.clearChatBaseline()
+    // Best-effort OCR teardown. Promise is intentionally not awaited (stop()
+    // is sync to keep IPC responses snappy) but is contractually idempotent
+    // and no-throw, so leaking it is safe.
+    void this.ocr?.dispose().catch((err) => {
+      this.log.warn('OCR dispose failed', { err })
+    })
   }
 
   isRunning(): boolean {
@@ -233,6 +251,32 @@ export class Engine {
     if (this.policy) {
       const hash = createHash('sha256').update(screenshot).digest('hex')
       this.policy.observe({ type: 'screenshotHash', hash })
+    }
+
+    // OCR sampling — run only if policy enabled, OCR engine present, and the
+    // configured sample interval has elapsed. Tesseract.js can be slow
+    // (~200-500ms) so we never want to run it on every loop. Failures are
+    // silent (the engine returns '' and we just don't observe anything this
+    // cycle).
+    if (this.policy && this.ocr) {
+      const ocrCfg = this.policy.getConfig().ocr
+      if (ocrCfg.enabled) {
+        const now = this.nowFn()
+        if (now - this.lastOcrAt >= ocrCfg.sampleIntervalMs) {
+          this.lastOcrAt = now
+          try {
+            const buffer = screenshotToBuffer(screenshot)
+            const text = await this.ocr.extract(buffer)
+            if (text.length > 0) {
+              this.policy.observe({ type: 'screenText', text })
+            }
+          } catch (err) {
+            // Defensive — `extract()` is contractually no-throw, but a buggy
+            // implementation shouldn't take the loop down.
+            this.log.warn('OCR extract threw', { err })
+          }
+        }
+      }
     }
 
     const ctx: BrainContext = {
@@ -535,4 +579,22 @@ export class Engine {
       await this.sleep(Math.min(slice, Math.max(0, remaining)))
     }
   }
+}
+
+/**
+ * Convert the device's screenshot string (a `data:image/png;base64,...`
+ * data URL produced by RPADevice) into a Buffer suitable for the
+ * OcrEngine's `extract()` contract. We strip the data-URL prefix when
+ * present; otherwise the input is treated as a raw base64 payload.
+ *
+ * Exported indirectly only via test fakes — the conversion lives in the
+ * engine because the OCR boundary itself is intentionally Buffer-typed
+ * (decouples the OCR plug-in from however the device happens to encode
+ * the screenshot).
+ */
+function screenshotToBuffer(screenshot: string): Buffer {
+  const comma = screenshot.indexOf(',')
+  const payload =
+    comma >= 0 && screenshot.startsWith('data:') ? screenshot.slice(comma + 1) : screenshot
+  return Buffer.from(payload, 'base64')
 }

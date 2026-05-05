@@ -10,6 +10,7 @@
 //    → 有未读: 视觉点击红点 → 细检测联系人 → 点击联系人，回到步骤 3
 //    → 无未读: 轮询等待，直到新消息出现
 
+import { createHash } from 'node:crypto'
 import { AgentHooks, ActionItem } from './hooks'
 import { DesktopDevice } from './device'
 import { getLogger, newTraceId, type Logger } from './observability'
@@ -224,6 +225,16 @@ export class Engine {
     const screenshot = await this.device.screenshot()
     this.emitLog('thinking', '截图完成，请求 AI 分析...')
 
+    // Phase 3 cleanup: feed the screenshot's content hash to the breaker so its
+    // freeze-detection signal actually fires. SHA-256 is exact-match (no
+    // perceptual tolerance) — sufficient to catch "WeChat hung" / "login
+    // dialog popped" because in those cases the captured pixels are byte-for-
+    // byte identical across many seconds.
+    if (this.policy) {
+      const hash = createHash('sha256').update(screenshot).digest('hex')
+      this.policy.observe({ type: 'screenshotHash', hash })
+    }
+
     const ctx: BrainContext = {
       appType: this.currentAppType,
       screenshot,
@@ -308,8 +319,15 @@ export class Engine {
         'thinking',
         `检测到未读消息，点击红点区域 (${redDotCoordinates[0]}, ${redDotCoordinates[1]})`
       )
-      await this.device.activeUnreadByClick(redDotCoordinates)
-      await this.sleep(150 + Math.random() * 100)
+      // Phase 3 cleanup: route click pacing through Humanizer when policy is
+      // present. The fallback sleep keeps existing fixtures (no-policy tests)
+      // working unchanged.
+      await this.policyClick(
+        { type: 'click', coords: redDotCoordinates },
+        () => this.device.activeUnreadByClick(redDotCoordinates),
+        150,
+        100
+      )
 
       // ── Step 3: 细检测联系人红点 ──
       let contactResult = await this.device.isChatContactUnread()
@@ -396,8 +414,12 @@ export class Engine {
       }
 
       this.emitLog('thinking', `点击联系人 (${firstContactCoords[0]}, ${firstContactCoords[1]})`)
-      await this.device.clickUnreadContact(firstContactCoords)
-      await this.sleep(500 + Math.random() * 300)
+      await this.policyClick(
+        { type: 'click', coords: firstContactCoords },
+        () => this.device.clickUnreadContact(firstContactCoords),
+        500,
+        300
+      )
 
       // 切换了联系人 → 清除旧 baseline（新对话需要新的 baseline）
       this.device.clearChatBaseline()
@@ -456,6 +478,43 @@ export class Engine {
           result: result as unknown as Record<string, unknown>
         })
       }
+    }
+  }
+
+  /**
+   * Wraps a polling-loop click in policy.beforeAction/afterAction when a policy
+   * is configured, otherwise falls back to the legacy ad-hoc jittered sleep.
+   * Routes Humanizer pre/post delays through the click and forwards the
+   * outcome (rpaSuccess / rpaFailure) into the breaker. Coords are
+   * intentionally NOT reassigned from the jittered result here — the polling
+   * clicks target VLM-derived hot spots whose stability is more important
+   * than humanizer micro-jitter (those few px would push the click off the
+   * red dot in some layouts). The Humanizer's default click jitter is 2 px so
+   * the deviation would be small, but the priority for these polling clicks
+   * is correctness, not naturalness.
+   */
+  private async policyClick(
+    action: { type: 'click'; coords: [number, number] },
+    perform: () => Promise<void>,
+    fallbackBaseMs: number,
+    fallbackJitterMs: number
+  ): Promise<void> {
+    if (!this.policy) {
+      await perform()
+      await this.sleep(fallbackBaseMs + Math.random() * fallbackJitterMs)
+      return
+    }
+    await this.policy.beforeAction(action)
+    let success = false
+    let actionErr: Error | undefined
+    try {
+      await perform()
+      success = true
+    } catch (e) {
+      actionErr = e instanceof Error ? e : new Error(String(e))
+      throw actionErr
+    } finally {
+      await this.policy.afterAction(action, { success, err: actionErr })
     }
   }
 

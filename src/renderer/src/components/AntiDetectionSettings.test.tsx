@@ -3,11 +3,19 @@
  */
 import '@testing-library/jest-dom/vitest'
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
-import { cleanup, render, screen, waitFor } from '@testing-library/react'
+import { cleanup, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 
 import { AntiDetectionSettings } from './AntiDetectionSettings'
 import { setLocale } from '../i18n'
+import { renderWithProviders } from '../test-utils'
+
+// PR2 wraps AntiDetectionSettings in a QueryClientProvider since the
+// component now uses `useQuery` / `useMutation` for every IPC call. Use the
+// shared `renderWithProviders` helper from `test-utils` instead of bare
+// `render()` — each call constructs a fresh QueryClient so cache state from
+// a previous test cannot leak in.
+const render = renderWithProviders
 
 vi.mock('../assets/logo.png', () => ({ default: 'logo.png' }))
 vi.mock('../index.css', () => ({}))
@@ -348,8 +356,12 @@ describe('AntiDetectionSettings — breaker banner', () => {
     })
     const channels = (electron.invoke.mock.calls as unknown[][]).map((c) => c[0] as string)
     expect(channels).toContain('policy:resetBreaker')
-    // 2 snapshot calls: initial backfill + post-reset refetch.
-    expect(channels.filter((c) => c === 'policy:snapshot').length).toBe(2)
+    // At least 2 snapshot calls: initial backfill + post-reset refetch.
+    // PR2 swapped manual `await refreshSnapshot()` for
+    // `invalidateQueries(['policy:snapshot'])` plus a 2-second
+    // `refetchInterval`, so under load the suite can occasionally observe
+    // a third polling-driven call. The behavioural contract is "≥2".
+    expect(channels.filter((c) => c === 'policy:snapshot').length).toBeGreaterThanOrEqual(2)
     expect(onToast).toHaveBeenCalledWith('Breaker reset', 'success')
   })
 })

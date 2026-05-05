@@ -1,5 +1,7 @@
-import { useCallback, useEffect, useMemo, useRef, useState, JSX } from 'react'
+import { useCallback, useMemo, useState, JSX } from 'react'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { t } from '../i18n'
+import { ipc } from '../lib/ipc'
 
 // UI mirror of src/core/policy/config.ts. Source of truth lives in core;
 // renderer cannot import zod-laden modules.
@@ -71,6 +73,9 @@ interface PolicySnapshot {
 
 type SetResult = { success: true; config: AntiDetectionConfig } | { success: false; error: string }
 
+const POLICY_GET_KEY = ['policy:get'] as const
+const POLICY_SNAPSHOT_KEY = ['policy:snapshot'] as const
+
 interface AntiDetectionSettingsProps {
   /** Forwarded to the global toast helper. */
   onToast?: (msg: string, type: 'success' | 'error') => void
@@ -109,50 +114,111 @@ const AGGRESSIVE_PRESET = {
   }
 } as const
 
+/**
+ * Anti-detection (policy) settings. Phase 5 PR2 fully migrated this
+ * component to react-query:
+ *  - `policy:get` → `useQuery` with a long `staleTime` (config rarely
+ *    changes during a session).
+ *  - `policy:snapshot` → `useQuery` with a 2-second `refetchInterval`
+ *    so the breaker / hourly counters update without manual timers.
+ *  - `policy:set` → `useMutation`. On success, invalidates both
+ *    `policy:get` and `policy:snapshot` so the next read pulls the
+ *    server-canonicalized config (and the snapshot picks up new caps).
+ *  - `policy:resetBreaker` → `useMutation`, invalidates the snapshot.
+ *
+ * The local *editable* config (the `config` state below) is intentionally
+ * NOT the same object as the server config. Form edits flow into local
+ * state; only Save persists. On a fresh server load (initial fetch or
+ * post-save reconcile) the local copy is overwritten via
+ * `applyServerConfig`.
+ */
 export function AntiDetectionSettings({
   onToast,
   onNavigateDiagnostics
 }: AntiDetectionSettingsProps): JSX.Element {
+  const queryClient = useQueryClient()
   const [config, setConfig] = useState<AntiDetectionConfig | null>(null)
-  const [snapshot, setSnapshot] = useState<PolicySnapshot | null>(null)
   const [windowsJson, setWindowsJson] = useState<string>('{}')
   const [windowsJsonError, setWindowsJsonError] = useState<string | null>(null)
   const [bannedKeywordsText, setBannedKeywordsText] = useState<string>('')
-  const [saving, setSaving] = useState(false)
-  // Captures the most recent server-supplied config so the "balanced" preset
-  // and "reload" action can both rewind to the canonical defaults.
-  const initialConfigRef = useRef<AntiDetectionConfig | null>(null)
 
-  const refreshSnapshot = useCallback(async (): Promise<void> => {
-    const snap = (await window.electron?.invoke<PolicySnapshot | null>('policy:snapshot')) ?? null
-    setSnapshot(snap)
-  }, [])
-
+  // Sync the canonical server config into the local editable form state.
+  // The "balanced" preset and "reload" action both read directly from
+  // `serverConfig` (the react-query cache) — no separate "initial" ref
+  // needed, because the cache itself IS the canonical snapshot.
   const applyServerConfig = useCallback((cfg: AntiDetectionConfig): void => {
     setConfig(cfg)
     setWindowsJson(JSON.stringify(cfg.schedule.windows ?? {}, null, 2))
     setWindowsJsonError(null)
     setBannedKeywordsText((cfg.circuitBreaker.bannedKeywords ?? []).join('\n'))
-    initialConfigRef.current = cfg
   }, [])
 
-  // Backfill config + snapshot in parallel; subsequent edits are local until
-  // the user clicks Save. Snapshot is allowed to be null (engine never started).
-  useEffect(() => {
-    let cancelled = false
-    void (async (): Promise<void> => {
-      const [cfg, snap] = await Promise.all([
-        window.electron?.invoke<AntiDetectionConfig>('policy:get'),
-        window.electron?.invoke<PolicySnapshot | null>('policy:snapshot')
-      ])
-      if (cancelled) return
-      if (cfg) applyServerConfig(cfg)
-      setSnapshot(snap ?? null)
-    })()
-    return (): void => {
-      cancelled = true
+  // ── policy:get (read-once with long stale) ─────────────────────────────
+  const { data: serverConfig } = useQuery<AntiDetectionConfig | null>({
+    queryKey: POLICY_GET_KEY,
+    queryFn: async () => (await ipc.invoke<AntiDetectionConfig | null>('policy:get')) ?? null,
+    // Long stale + no auto-refetch so unsaved form edits aren't blown
+    // away by a focus-driven refetch. Save / Reload explicitly invalidate
+    // when the user wants the canonical server config.
+    staleTime: Infinity,
+    refetchOnWindowFocus: false,
+    refetchOnReconnect: false
+  })
+
+  // Sync server config → local editable form state. We use the
+  // render-phase "store last seen prop" pattern (React docs: §"Adjusting
+  // some state when a prop changes") rather than a `useEffect`, both
+  // because it avoids the `react-hooks/set-state-in-effect` lint and
+  // because it's the recommended way to derive form state from a piece
+  // of slowly-changing data: it skips the extra render cycle the effect
+  // path would introduce.
+  const [lastSyncedServerConfig, setLastSyncedServerConfig] = useState<
+    AntiDetectionConfig | null | undefined
+  >(undefined)
+  if (serverConfig !== lastSyncedServerConfig) {
+    setLastSyncedServerConfig(serverConfig)
+    if (serverConfig) applyServerConfig(serverConfig)
+  }
+
+  // ── policy:snapshot (live counters, 2s polling) ───────────────────────
+  const { data: snapshot = null } = useQuery<PolicySnapshot | null>({
+    queryKey: POLICY_SNAPSHOT_KEY,
+    queryFn: async () => (await ipc.invoke<PolicySnapshot | null>('policy:snapshot')) ?? null,
+    refetchInterval: 2_000,
+    staleTime: 1_000
+  })
+
+  // ── Mutations ─────────────────────────────────────────────────────────
+  const savePolicy = useMutation<SetResult | undefined, Error, AntiDetectionConfig>({
+    mutationFn: (payload) => ipc.invoke<SetResult>('policy:set', payload),
+    onSuccess: (result) => {
+      if (result?.success) {
+        applyServerConfig(result.config)
+        // The server-canonical config is already in `result.config`; we
+        // also invalidate so any future read (including snapshot's
+        // embedded `.config`) re-pulls. Fire-and-forget; react-query
+        // handles the racing.
+        queryClient.invalidateQueries({ queryKey: POLICY_GET_KEY })
+        queryClient.invalidateQueries({ queryKey: POLICY_SNAPSHOT_KEY })
+        onToast?.(t('policy.saved'), 'success')
+      } else {
+        const err = result?.error ?? ''
+        onToast?.(`${t('policy.saveFailed')}: ${err}`, 'error')
+      }
+    },
+    onError: (err) => {
+      const message = err instanceof Error ? err.message : String(err)
+      onToast?.(`${t('policy.saveFailed')}: ${message}`, 'error')
     }
-  }, [applyServerConfig])
+  })
+
+  const resetBreaker = useMutation<unknown, Error, void>({
+    mutationFn: () => ipc.invoke('policy:resetBreaker'),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: POLICY_SNAPSHOT_KEY })
+      onToast?.(t('policy.resetBreakerDone'), 'success')
+    }
+  })
 
   // Cross-field validation. Save is blocked while any range is inverted or
   // the windows JSON is unparseable; the inline errors point the user at the
@@ -171,7 +237,7 @@ export function AntiDetectionSettings({
     return ranges.some(([a, b]) => a > b)
   }, [config])
 
-  const canSave = !!config && !rangeInvalid && !windowsJsonError && !saving
+  const canSave = !!config && !rangeInvalid && !windowsJsonError && !savePolicy.isPending
 
   // ── Field updaters ───────────────────────────────────────────────────────
   const updateHumanizer = useCallback(
@@ -220,9 +286,8 @@ export function AntiDetectionSettings({
     })
   }, [])
   const applyPresetBalanced = useCallback((): void => {
-    const initial = initialConfigRef.current
-    if (initial) applyServerConfig(initial)
-  }, [applyServerConfig])
+    if (serverConfig) applyServerConfig(serverConfig)
+  }, [serverConfig, applyServerConfig])
   const applyPresetAggressive = useCallback((): void => {
     setConfig((prev) => {
       if (!prev) return prev
@@ -266,35 +331,20 @@ export function AntiDetectionSettings({
   )
 
   // ── Save / reload / breaker reset ────────────────────────────────────────
-  const handleSave = useCallback(async (): Promise<void> => {
+  const handleSave = useCallback((): void => {
     if (!config || !canSave) return
-    setSaving(true)
-    try {
-      const result = (await window.electron?.invoke<SetResult>('policy:set', config)) ?? undefined
-      if (result?.success) {
-        applyServerConfig(result.config)
-        onToast?.(t('policy.saved'), 'success')
-      } else {
-        const err = result?.error ?? ''
-        onToast?.(`${t('policy.saveFailed')}: ${err}`, 'error')
-      }
-    } finally {
-      setSaving(false)
-    }
-  }, [config, canSave, applyServerConfig, onToast])
+    savePolicy.mutate(config)
+  }, [config, canSave, savePolicy])
 
   const handleReload = useCallback((): void => {
-    void (async (): Promise<void> => {
-      const cfg = await window.electron?.invoke<AntiDetectionConfig>('policy:get')
-      if (cfg) applyServerConfig(cfg)
-    })()
-  }, [applyServerConfig])
+    // Force a refetch of policy:get; the useEffect above will reapply it
+    // into local state once the new data lands.
+    void queryClient.invalidateQueries({ queryKey: POLICY_GET_KEY })
+  }, [queryClient])
 
-  const handleResetBreaker = useCallback(async (): Promise<void> => {
-    await window.electron?.invoke('policy:resetBreaker')
-    await refreshSnapshot()
-    onToast?.(t('policy.resetBreakerDone'), 'success')
-  }, [refreshSnapshot, onToast])
+  const handleResetBreaker = useCallback((): void => {
+    resetBreaker.mutate()
+  }, [resetBreaker])
 
   if (!config) {
     return <div className="slide-up" data-testid="policy-loading" />
@@ -314,6 +364,7 @@ export function AntiDetectionSettings({
             <button
               className="btn btn-danger"
               onClick={handleResetBreaker}
+              disabled={resetBreaker.isPending}
               data-testid="policy-reset-breaker"
             >
               {t('policy.resetBreaker')}

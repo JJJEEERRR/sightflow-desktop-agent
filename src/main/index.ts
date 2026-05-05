@@ -20,6 +20,7 @@ import {
   type KvStore
 } from './secure-store'
 import { Engine } from '../core/engine'
+import { WechatScenario } from '../core/scenarios'
 import { LocalHooks } from '../core/local-hooks'
 import { RPADevice } from '../core/rpa-device'
 import { VlmBrain, OpenAICompatProvider, type AgentBrain, type BrainConfig } from '../core/brain'
@@ -461,9 +462,10 @@ app.whenReady().then(async () => {
         const ocr: OcrEngine = ocrCfg?.enabled
           ? new TesseractOcrEngine({ language: ocrCfg.language })
           : new NullOcrEngine()
+        const scenario = new WechatScenario(device)
         const e = new Engine(
           currentBrain!,
-          device,
+          scenario,
           localHooks,
           onLog,
           sharedLifecycle!,

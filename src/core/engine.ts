@@ -1,28 +1,27 @@
 // src/core/engine.ts
-// 主引擎循环 — 微信自动回复的完整感知→决策→执行闭环
+// 主引擎循环 — 感知→决策→执行闭环（Scenario-agnostic）。
 //
-// 流程:
-// 1. 启动 — 初始化 hooks + 权限 OK
-// 2. 测量 — VLM 一次性定位布局（chatEntrance / firstContact / inputArea），结果缓存
-// 3. 发图 — 截图当前对话
-// 4. 回复 — AI 分析截图内容 + RPA 执行回复
-// 5. 检查下一条 — 纯视觉红点检测 + 点击切换
-//    → 有未读: 视觉点击红点 → 细检测联系人 → 点击联系人，回到步骤 3
-//    → 无未读: 轮询等待，直到新消息出现
+// Phase 4: 微信特定的编排（红点检测、双击激活、联系人列表轮询）从 Engine
+// 抽离到 Scenario 接口背后。Engine 现在只负责:
+//   1. 启动 — Lifecycle 握手 + Watchdog 协作
+//   2. 测量 — 调用 scenario.measureLayout()
+//   3. 截图+决策 — scenario.screenshot() → brain.decide(ctx)
+//   4. 执行 — scenario.execute(decision, helpers)
+//   5. 等待下一条 — scenario.waitForNextChat(running, helpers)
+// 加上 OCR 采样、policy 门控、SHA-256 哈希观测等横切关注点。
 
 import { createHash } from 'node:crypto'
 import { AgentHooks, ActionItem } from './hooks'
-import { DesktopDevice } from './device'
 import { getLogger, newTraceId, type Logger } from './observability'
 import { Lifecycle, type LifecycleState } from './runtime'
-import type { AgentBrain, BrainContext, BrainDecision } from './brain'
+import type { AgentBrain, BrainContext } from './brain'
 import type { OcrEngine } from './ocr'
 import type { AntiDetectionPolicy } from './policy'
+import type { Scenario, ScenarioHelpers } from './scenarios/types'
 import type { AppType } from './rpa/types'
 
 export class Engine {
   private running = false
-  private consecutiveUnreadFailures = 0
   private readonly log: Logger
   private readonly lifecycle: Lifecycle
   private currentTraceId: string | undefined
@@ -31,25 +30,18 @@ export class Engine {
   private readonly nowFn: () => number
 
   /**
-   * Phase 2 constructor signature: `brain` is the decision-making component
-   * (replaces the former `hooks.getReply`). `hooks` is now optional and only
-   * carries lifecycle/error/external-trigger callbacks.
-   *
-   * Phase 3 adds an optional `policy` that the engine consults before every
-   * tick (rate-limit, schedule window, circuit breaker) and around every
-   * device action (humanizer pre/post delays, jitter, breaker observation).
-   * The argument is optional so existing tests and the Phase-2 code path keep
-   * working unchanged.
-   *
-   * Phase 4 adds an optional `ocr` engine which is sample-rate-limited per
-   * `policy.config.ocr.sampleIntervalMs` and feeds the resulting text into
-   * `policy.observe({ type: 'screenText', … })`. `nowFn` is injectable so
-   * tests can drive sample-interval boundaries deterministically without
-   * faking the wall clock.
+   * Phase 2 introduced `brain` (replaces the former `hooks.getReply`).
+   * Phase 3 added an optional `policy` consulted before every tick and
+   * around every device action. Phase 4 added the optional `ocr` engine
+   * (sample-rate-limited per `policy.config.ocr.sampleIntervalMs`) and the
+   * `Scenario` parameter — engine no longer holds a `DesktopDevice`
+   * directly; everything app-specific (screenshot, send-reply, wait-for-
+   * next-chat) goes through the scenario. `nowFn` is injectable so tests
+   * can drive sample-interval boundaries deterministically.
    */
   constructor(
     private brain: AgentBrain,
-    private device: DesktopDevice,
+    private scenario: Scenario,
     private hooks: AgentHooks = {},
     private onLog?: (type: string, content: string) => void,
     lifecycle?: Lifecycle,
@@ -91,6 +83,21 @@ export class Engine {
     }
   }
 
+  /**
+   * Build the helpers struct passed to every scenario call. A fresh struct
+   * per call keeps the surface immutable from the scenario's POV; the
+   * underlying engine state (policy, hooks, log routing) is shared by
+   * reference.
+   */
+  private scenarioHelpers(): ScenarioHelpers {
+    return {
+      emitLog: (type, content) => this.emitLog(type, content),
+      sleep: (ms) => this.sleep(ms),
+      policy: this.policy,
+      hooks: this.hooks
+    }
+  }
+
   async start(): Promise<void> {
     if (this.running) return
     this.running = true
@@ -112,7 +119,7 @@ export class Engine {
     try {
       // ── Step 1: 测量 ──
       this.emitLog('thinking', '开始布局测量...')
-      const measureResult = await this.device.measureLayout()
+      const measureResult = await this.scenario.measureLayout()
 
       if (!measureResult.success) {
         const reason = measureResult.error || '布局测量失败'
@@ -148,7 +155,7 @@ export class Engine {
 
           if (!this.running) break
 
-          await this.waitForNextUnread()
+          await this.scenario.waitForNextChat(() => this.running, this.scenarioHelpers())
         } catch (e) {
           const err = e instanceof Error ? e : new Error(String(e))
           this.emitLog('error', `循环异常: ${err.message}`)
@@ -181,13 +188,21 @@ export class Engine {
   stop(): void {
     this.running = false
     this.safeStopLifecycle()
-    this.device.clearChatBaseline()
+    this.scenario.clearChatBaseline()
     // Best-effort OCR teardown. Promise is intentionally not awaited (stop()
     // is sync to keep IPC responses snappy) but is contractually idempotent
     // and no-throw, so leaking it is safe.
     void this.ocr?.dispose().catch((err) => {
       this.log.warn('OCR dispose failed', { err })
     })
+    // Best-effort scenario teardown. Same reasoning as OCR — fire-and-
+    // forget; defensive `?.` because `dispose` is an optional method on
+    // the Scenario interface.
+    if (this.scenario.dispose) {
+      void this.scenario.dispose().catch((err) => {
+        this.log.warn('scenario dispose failed', { err })
+      })
+    }
   }
 
   isRunning(): boolean {
@@ -197,24 +212,27 @@ export class Engine {
   /**
    * Allow external orchestrators (e.g. the main-process IPC handlers) to update
    * the engine's target application type without reaching into private fields.
-   * Engine also keeps a local copy so the value can be plumbed into
-   * `BrainContext` without round-tripping through the device.
+   * Engine keeps a local copy so the value can be plumbed into `BrainContext`
+   * without round-tripping through the scenario, and forwards to the
+   * scenario's optional `setAppType` hook so the underlying device can pick
+   * up new RPA hot spots.
    */
   setAppType(appType: AppType): void {
     this.currentAppType = appType
-    this.device.setAppType(appType)
+    this.scenario.setAppType?.(appType)
   }
 
   // ── Step 3+4: 发图 → 回复 ──
 
   /**
-   * 处理当前对话：截图 → brain 决策 → RPA 执行回复 → 设置 diff baseline
+   * 处理当前对话：截图 → brain 决策 → scenario 执行回复 → 设置 diff baseline
    *
-   * Phase 2 起，"看到截图、决定怎么回复" 的职责完全交给 `AgentBrain`。
-   * 引擎只负责：
-   *   - 截图、把上下文打包成 `BrainContext`
-   *   - 把 brain 流式输出的 `thinking` / `decision` 路由到 emitLog / 设备调用
-   *   - 维护 chatMainArea diff baseline
+   * Phase 4 起，"如何在这个 app 里截图 / 如何执行 reply 决策" 完全交给 Scenario，
+   * Engine 只负责：
+   *   - 调用 scenario.screenshot() / scenario.execute() / scenario.setChatBaseline()
+   *   - 把上下文打包成 BrainContext 喂给 brain
+   *   - 把 brain 流式输出的 thinking/decision 路由到 emitLog / scenario
+   *   - 横切关注点：policy 门控、screenshot hash 观测、OCR 采样
    */
   private async processCurrentChat(): Promise<void> {
     // ── Phase 3: anti-detection gate ────────────────────────────────────
@@ -240,7 +258,7 @@ export class Engine {
       }
     }
 
-    const screenshot = await this.device.screenshot()
+    const screenshot = await this.scenario.screenshot()
     this.emitLog('thinking', '截图完成，请求 AI 分析...')
 
     // Phase 3 cleanup: feed the screenshot's content hash to the breaker so its
@@ -294,7 +312,7 @@ export class Engine {
         }
         if (stream.decision) {
           sawDecision = true
-          await this.executeDecision(stream.decision)
+          await this.scenario.execute(stream.decision, this.scenarioHelpers())
         }
       }
       if (sawDecision) this.policy?.observe({ type: 'aiSuccess' })
@@ -305,210 +323,7 @@ export class Engine {
     }
 
     if (this.running) {
-      await this.device.setChatBaseline()
-    }
-  }
-
-  // ── Step 5: 双通道检测（红点 + chatMainArea diff） ──
-
-  /**
-   * 等待下一条消息（红点检测 + chatMainArea diff 双通道并行）
-   *
-   * 通道 1 — 红点检测：检测左侧列表的未读角标（其他联系人发消息）
-   * 通道 2 — chatMainArea diff：检测当前对话窗口是否有变化（当前联系人发消息）
-   *
-   * 为什么需要双通道：
-   * - 红点检测只能发现 **其他联系人** 的新消息（左侧列表出现红点）
-   * - 但 **当前打开的对话** 收到新消息时，左侧不会出现红点
-   * - chatMainArea diff 弥补了这个盲点
-   *
-   * 流程：
-   * 1. 每轮轮询先检查 chatMainArea diff
-   * 2. diff 有变化 → 直接 return（当前对话有新消息，回到 processCurrentChat）
-   * 3. diff 无变化 → 检查红点
-   * 4. 红点有未读 → 视觉点击切换联系人 → return
-   */
-  private async waitForNextUnread(): Promise<void> {
-    while (this.running) {
-      // 轮询间隔 3-5 秒
-      await this.sleep(3000 + Math.random() * 2000)
-
-      if (!this.running) break
-
-      // ── 通道 2: chatMainArea diff 检测 ──
-      const diffResult = await this.device.hasChatAreaChanged()
-
-      if (diffResult.hasDiff) {
-        this.emitLog('thinking', '检测到当前对话有新消息（chatMainArea diff）')
-        // 当前对话有变化 → 直接回到 processCurrentChat
-        return
-      }
-
-      // ── 通道 1: 粗检测红点 ──
-      const unreadResult = await this.device.hasUnreadMessage()
-
-      if (!unreadResult.hasUnread) {
-        // 两个通道都没有新消息，继续轮询
-        continue
-      }
-
-      // ── Step 2: 点击红点区域激活未读列表 ──
-      const redDotCoordinates = unreadResult.chatEntranceArea?.coordinates
-      if (!redDotCoordinates) {
-        this.emitLog('error', '检测到未读但未获取到 chatEntranceArea 坐标，继续轮询')
-        continue
-      }
-
-      this.emitLog(
-        'thinking',
-        `检测到未读消息，点击红点区域 (${redDotCoordinates[0]}, ${redDotCoordinates[1]})`
-      )
-      // Phase 3 cleanup: route click pacing through Humanizer when policy is
-      // present. The fallback sleep keeps existing fixtures (no-policy tests)
-      // working unchanged.
-      await this.policyClick(
-        { type: 'click', coords: redDotCoordinates },
-        () => this.device.activeUnreadByClick(redDotCoordinates),
-        150,
-        100
-      )
-
-      // ── Step 3: 细检测联系人红点 ──
-      let contactResult = await this.device.isChatContactUnread()
-
-      // ── Step 3.1: 首次细检测失败 → 重新粗检测 + 再次点击 ──
-      if (!contactResult.isUnread) {
-        this.emitLog('thinking', '当前联系人无未读消息，重新检测...')
-        await this.sleep(1000)
-
-        const recheckResult = await this.device.hasUnreadMessage()
-
-        if (recheckResult.hasUnread) {
-          this.emitLog('thinking', '仍有未读消息，再次点击红点')
-
-          const recheckCoords = recheckResult.chatEntranceArea?.coordinates
-          if (recheckCoords) {
-            await this.device.activeUnreadByClick(recheckCoords)
-            await this.sleep(500)
-
-            // 再次细检测
-            contactResult = await this.device.isChatContactUnread()
-          }
-        } else {
-          this.emitLog('skip', '重新检测后无未读消息，继续轮询')
-          continue
-        }
-      }
-
-      // ── Step 3.2: 连续两次细检测失败 → 增加失败计数，达到阈值再清除缓存强制重检 ──
-      if (!contactResult.isUnread) {
-        this.consecutiveUnreadFailures++
-
-        if (this.consecutiveUnreadFailures >= 3) {
-          this.emitLog(
-            'thinking',
-            `连续 ${this.consecutiveUnreadFailures} 次检测失败，VLM 坐标缓存可能不准确，清除缓存强制重检`
-          )
-          this.device.clearUnreadCache()
-          this.consecutiveUnreadFailures = 0 // 重置
-          await this.sleep(500)
-
-          // 重新调 isChatContactUnread（触发 VLM 重新定位 firstContact）
-          contactResult = await this.device.isChatContactUnread()
-
-          if (!contactResult.isUnread) {
-            // 缓存重建后仍失败 → 再点击一次 + 最终检测
-            this.emitLog('thinking', '缓存重建后检测失败，再点击一次')
-
-            const retryUnread = await this.device.hasUnreadMessage()
-            const retryCoords = retryUnread.chatEntranceArea?.coordinates
-
-            if (retryCoords) {
-              await this.device.activeUnreadByClick(retryCoords)
-              await this.sleep(500)
-
-              contactResult = await this.device.isChatContactUnread()
-
-              if (!contactResult.isUnread) {
-                this.emitLog('skip', '最终检测仍失败，放弃，继续轮询')
-                continue
-              }
-            } else {
-              this.emitLog('skip', '缓存重建后未获取到坐标，继续轮询')
-              continue
-            }
-          }
-        } else {
-          this.emitLog(
-            'skip',
-            `细检测失败 (第 ${this.consecutiveUnreadFailures} 次)，暂不清除缓存，继续轮询`
-          )
-          continue
-        }
-      }
-
-      // 重置失败计数
-      this.consecutiveUnreadFailures = 0
-
-      // ── Step 4: 点击未读联系人 ──
-      const firstContactCoords = contactResult.firstContactCoords
-      if (!firstContactCoords) {
-        this.emitLog('skip', '未获取到 firstContact 坐标，继续轮询')
-        continue
-      }
-
-      this.emitLog('thinking', `点击联系人 (${firstContactCoords[0]}, ${firstContactCoords[1]})`)
-      await this.policyClick(
-        { type: 'click', coords: firstContactCoords },
-        () => this.device.clickUnreadContact(firstContactCoords),
-        500,
-        300
-      )
-
-      // 切换了联系人 → 清除旧 baseline（新对话需要新的 baseline）
-      this.device.clearChatBaseline()
-
-      // 成功切换 → 回到主循环 processCurrentChat
-      return
-    }
-  }
-
-  // ── 执行 brain 决策 ──
-
-  private async executeDecision(decision: BrainDecision): Promise<void> {
-    try {
-      switch (decision.type) {
-        case 'reply': {
-          this.emitLog('reply', `[回复] ${decision.text}`)
-          // Phase 3: pre-action humanizer delay (no jitter for a text send).
-          await this.policy?.beforeAction({ type: 'reply', text: decision.text })
-          let success = false
-          let actionErr: Error | undefined
-          try {
-            await this.device.sendMessage(decision.text)
-            success = true
-          } catch (sendErr) {
-            actionErr = sendErr instanceof Error ? sendErr : new Error(String(sendErr))
-            throw actionErr
-          } finally {
-            await this.policy?.afterAction(
-              { type: 'reply', text: decision.text },
-              { success, err: actionErr }
-            )
-          }
-          this.hooks.onActionComplete?.({ type: 'text', content: decision.text } as ActionItem, {
-            success: true
-          })
-          break
-        }
-        case 'skip':
-          this.emitLog('skip', decision.reason ? `跳过：${decision.reason}` : '跳过回复')
-          break
-      }
-    } catch (e) {
-      const err = e instanceof Error ? e : new Error(String(e))
-      this.emitLog('error', `执行动作失败: ${err.message}`)
-      this.hooks.onError?.(err, 'execute_action')
+      await this.scenario.setChatBaseline()
     }
   }
 
@@ -522,43 +337,6 @@ export class Engine {
           result: result as unknown as Record<string, unknown>
         })
       }
-    }
-  }
-
-  /**
-   * Wraps a polling-loop click in policy.beforeAction/afterAction when a policy
-   * is configured, otherwise falls back to the legacy ad-hoc jittered sleep.
-   * Routes Humanizer pre/post delays through the click and forwards the
-   * outcome (rpaSuccess / rpaFailure) into the breaker. Coords are
-   * intentionally NOT reassigned from the jittered result here — the polling
-   * clicks target VLM-derived hot spots whose stability is more important
-   * than humanizer micro-jitter (those few px would push the click off the
-   * red dot in some layouts). The Humanizer's default click jitter is 2 px so
-   * the deviation would be small, but the priority for these polling clicks
-   * is correctness, not naturalness.
-   */
-  private async policyClick(
-    action: { type: 'click'; coords: [number, number] },
-    perform: () => Promise<void>,
-    fallbackBaseMs: number,
-    fallbackJitterMs: number
-  ): Promise<void> {
-    if (!this.policy) {
-      await perform()
-      await this.sleep(fallbackBaseMs + Math.random() * fallbackJitterMs)
-      return
-    }
-    await this.policy.beforeAction(action)
-    let success = false
-    let actionErr: Error | undefined
-    try {
-      await perform()
-      success = true
-    } catch (e) {
-      actionErr = e instanceof Error ? e : new Error(String(e))
-      throw actionErr
-    } finally {
-      await this.policy.afterAction(action, { success, err: actionErr })
     }
   }
 

@@ -1,2 +1,3 @@
-// jsdom-environment test setup. Intentionally empty for Phase 0.
-export {}
+// jsdom-environment test setup.
+// Wires @testing-library/jest-dom matchers into vitest's expect.
+import '@testing-library/jest-dom/vitest'

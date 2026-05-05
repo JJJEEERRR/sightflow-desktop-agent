@@ -39,10 +39,16 @@ export default defineConfig({
         'src/core/rpa/tests/**'
       ],
       thresholds: {
-        lines: 0,
-        statements: 0,
-        functions: 0,
-        branches: 0
+        // Global floor for the testable surface. Set just below the current
+        // measured aggregate (44.79 / 83 / 56.56 / 44.79) so any regression
+        // fails CI. Cannot go to 100 — many files (Electron entry, native
+        // input/screenshot, etc.) need a real Electron runtime to exercise.
+        // Per-file targets for tightly-tested modules are documented in
+        // tests/README.md; tighten this floor as more areas become testable.
+        lines: 40,
+        statements: 40,
+        functions: 50,
+        branches: 75
       }
     }
   }

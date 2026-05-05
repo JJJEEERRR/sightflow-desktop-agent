@@ -12,12 +12,17 @@
 // Engine now keeps only the brain / policy / OCR / lifecycle wiring. See
 // ADR-0011.
 
+import { createHash } from 'node:crypto'
+import { Jimp } from 'jimp'
 import type { Scenario, ScenarioHelpers } from '../types'
 import type { BrainDecision } from '../../brain'
 import type { DesktopDevice } from '../../device'
 import type { ActionItem } from '../../hooks'
 import type { AppType } from '../../rpa/types'
+import { getLogger, type Logger } from '../../observability'
+
 export class WechatScenario implements Scenario {
+  private readonly log: Logger = getLogger('scenario.wechat')
   /**
    * Tracks how many times in a row the contact-level red-dot detection
    * came back negative right after we clicked the chatEntrance area. After
@@ -48,6 +53,38 @@ export class WechatScenario implements Scenario {
     this.device.clearChatBaseline()
   }
 
+  // ── 联系人识别（per-contact rate-limit 用） ──────────────────────────────
+
+  /**
+   * Derive a stable, opaque identifier for the currently-open chat from a
+   * screenshot. We hash a deterministic top strip of the screenshot (the
+   * WeChat chat header band — contact name + avatar pixels) with SHA-256
+   * and truncate to 16 hex chars.
+   *
+   * Why a header strip and not the whole screenshot: the chat-main-area
+   * pixels below the header change every time a new message is rendered,
+   * which would make a whole-screenshot hash rotate every tick within the
+   * same chat. The header band stays stable across ticks for the same
+   * contact.
+   *
+   * Failure mode: any decode / crop error returns `undefined`, and the
+   * engine treats that as "I don't know who this is" — per-contact gates
+   * skip but global rate limits still apply. See ADR-0012.
+   */
+  async getContactId(screenshot: string): Promise<string | undefined> {
+    try {
+      const buffer = screenshotToBuffer(screenshot)
+      const img = await Jimp.read(buffer)
+      const headerHeight = Math.min(80, img.bitmap.height)
+      img.crop({ x: 0, y: 0, w: img.bitmap.width, h: headerHeight })
+      const hash = createHash('sha256').update(img.bitmap.data).digest('hex')
+      return hash.slice(0, 16)
+    } catch (err) {
+      this.log.warn('getContactId failed', { err })
+      return undefined
+    }
+  }
+
   // ── 执行 brain 决策 ────────────────────────────────────────────────────
 
   async execute(decision: BrainDecision, helpers: ScenarioHelpers): Promise<void> {
@@ -56,7 +93,13 @@ export class WechatScenario implements Scenario {
         case 'reply': {
           helpers.emitLog('reply', `[回复] ${decision.text}`)
           // Phase 3: pre-action humanizer delay (no jitter for a text send).
-          await helpers.policy?.beforeAction({ type: 'reply', text: decision.text })
+          // contactId is threaded through so the rate limiter can record the
+          // send under the right per-contact bucket (per-day cap enforcement).
+          await helpers.policy?.beforeAction({
+            type: 'reply',
+            text: decision.text,
+            contactId: helpers.contactId
+          })
           let success = false
           let actionErr: Error | undefined
           try {
@@ -67,7 +110,7 @@ export class WechatScenario implements Scenario {
             throw actionErr
           } finally {
             await helpers.policy?.afterAction(
-              { type: 'reply', text: decision.text },
+              { type: 'reply', text: decision.text, contactId: helpers.contactId },
               { success, err: actionErr }
             )
           }
@@ -275,4 +318,18 @@ export class WechatScenario implements Scenario {
       await policy.afterAction(action, { success, err: actionErr })
     }
   }
+}
+
+/**
+ * Convert the engine's screenshot string (a `data:image/png;base64,...`
+ * data URL) to a raw PNG Buffer. Strips the data-URL prefix when present;
+ * otherwise treats the input as a raw base64 payload. Mirror of the
+ * helper in `engine.ts` — duplicated here so the scenario doesn't depend
+ * on engine internals.
+ */
+function screenshotToBuffer(screenshot: string): Buffer {
+  const comma = screenshot.indexOf(',')
+  const payload =
+    comma >= 0 && screenshot.startsWith('data:') ? screenshot.slice(comma + 1) : screenshot
+  return Buffer.from(payload, 'base64')
 }

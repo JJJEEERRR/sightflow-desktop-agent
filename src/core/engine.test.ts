@@ -7,6 +7,8 @@ import type { AppType } from './rpa/types'
 import { Lifecycle, type LifecycleEvent } from './runtime'
 import type { AgentBrain, BrainContext, BrainStream } from './brain'
 import type { OcrEngine } from './ocr'
+import type { Scenario, ScenarioHelpers } from './scenarios/types'
+import type { BrainDecision } from './brain'
 
 /**
  * Build an in-memory `DesktopDevice` whose behaviour can be programmed per
@@ -714,8 +716,13 @@ describe('Engine.policy integration (Phase 3)', () => {
     await vi.advanceTimersByTimeAsync(50)
     await p
 
-    // Engine should never have asked for a screenshot — the gate fired first.
-    expect(state.calls).not.toContain('screenshot')
+    // The engine now takes the screenshot before the policy gate so it can
+    // derive a per-contact id (see ADR-0012). What still must NOT happen
+    // when the gate denies with a pause: nothing downstream of the gate —
+    // no sendMessage, no setChatBaseline, no brain.decide call.
+    expect(state.calls).not.toContain('sendMessage')
+    expect(state.calls).not.toContain('setChatBaseline')
+    expect(brain.decideCount).toBe(0)
     // Lifecycle should have moved into 'paused' with reason 'breaker'.
     const pauseEvent = events.find((e) => e.to === 'paused')
     expect(pauseEvent).toBeDefined()
@@ -748,7 +755,8 @@ describe('Engine.policy integration (Phase 3)', () => {
     const policy = {
       beforeReply: async () => {
         callCount++
-        // Block forever; engine should keep cycling and never screenshot.
+        // Block forever; engine should keep cycling and never reach
+        // sendMessage / brain.decide.
         return {
           proceed: false as const,
           reason: 'rateLimit:minInterval',
@@ -773,7 +781,11 @@ describe('Engine.policy integration (Phase 3)', () => {
     await vi.advanceTimersByTimeAsync(2_000)
     await p
 
-    expect(state.calls).not.toContain('screenshot')
+    // Post ADR-0012 the screenshot now happens before the gate (so we can
+    // derive a per-contact id). What still must NOT happen on a soft
+    // block: anything downstream of the gate.
+    expect(state.calls).not.toContain('sendMessage')
+    expect(brain.decideCount).toBe(0)
     expect(callCount).toBeGreaterThan(1)
   })
 
@@ -1269,5 +1281,236 @@ describe('Engine.policy integration (Phase 3)', () => {
     // The actual device methods still ran.
     expect(state.calls).toContain('activeUnreadByClick(33,44)')
     expect(state.calls).toContain('clickUnreadContact(55,66)')
+  })
+})
+
+// ── ADR-0012 — per-contact rate-limit plumbing ────────────────────────────
+//
+// Engine derives an opaque `contactId` from the screenshot via
+// `scenario.getContactId(screenshot)` and threads it into:
+//   1. `policy.beforeReply({ contactId })` — so per-contact daily caps gate.
+//   2. `ScenarioHelpers.contactId` — so the scenario can forward it into
+//      `policy.afterAction(...)` on a successful send (recordSend).
+//
+// These tests instrument a wrapper Scenario around `MockScenario` so we can
+// assert the engine's plumbing without standing up the real Jimp pipeline.
+
+describe('Engine — per-contact rate-limit plumbing (ADR-0012)', () => {
+  /**
+   * Wraps a `MockScenario` and returns a stable contact id (or whatever the
+   * test injects). Records the screenshot it was handed so we can assert
+   * "called after the screenshot" ordering.
+   */
+  function makeContactIdScenario(
+    inner: Scenario,
+    impl?: (screenshot: string) => Promise<string | undefined>
+  ): Scenario & { contactIdCalls: string[] } {
+    const contactIdCalls: string[] = []
+    const wrapper: Scenario & { contactIdCalls: string[] } = {
+      contactIdCalls,
+      measureLayout: () => inner.measureLayout(),
+      screenshot: () => inner.screenshot(),
+      setChatBaseline: () => inner.setChatBaseline(),
+      clearChatBaseline: () => inner.clearChatBaseline(),
+      execute: (decision: BrainDecision, helpers: ScenarioHelpers) =>
+        inner.execute(decision, helpers),
+      waitForNextChat: (running: () => boolean, helpers: ScenarioHelpers) =>
+        inner.waitForNextChat(running, helpers),
+      setAppType: (t: AppType) => inner.setAppType?.(t),
+      dispose: () => inner.dispose?.() ?? Promise.resolve()
+    }
+    if (impl) {
+      wrapper.getContactId = async (screenshot: string): Promise<string | undefined> => {
+        contactIdCalls.push(screenshot)
+        return impl(screenshot)
+      }
+    }
+    return wrapper
+  }
+
+  it('calls scenario.getContactId(screenshot) and threads the result into policy.beforeReply({ contactId })', async () => {
+    const state: FakeDeviceState = {
+      measureLayoutResult: { success: true },
+      hasUnreadQueue: [{ hasUnread: false }],
+      isContactUnreadQueue: [],
+      hasChatAreaChangedQueue: [{ hasDiff: false, hasBaseline: true }],
+      screenshotResult: 'frame-pcid',
+      calls: []
+    }
+    const device = makeFakeDevice(state)
+    const brain = makeFakeBrain([[{ type: 'skip' }]])
+    const hooks = makeFakeHooks()
+
+    const inner = new MockScenario(device)
+    const scenario = makeContactIdScenario(inner, async () => 'contact-abc-123')
+
+    const beforeReplyCalls: Array<{ contactId?: string }> = []
+    const policy = {
+      beforeReply: async (ctx: { contactId?: string } = {}) => {
+        beforeReplyCalls.push(ctx)
+        return { proceed: true as const }
+      },
+      beforeAction: async () => ({}),
+      afterAction: async () => {},
+      observe: () => {},
+      resetBreaker: () => {},
+      snapshot: () => ({}) as never,
+      updateConfig: () => {},
+      getConfig: () => ({}) as never
+    } as unknown as import('./policy').AntiDetectionPolicy
+
+    const engine = new Engine(brain, scenario, hooks, undefined, undefined, policy)
+    const p = engine.start()
+    await vi.advanceTimersByTimeAsync(50)
+    await vi.advanceTimersByTimeAsync(6_000)
+    engine.stop()
+    await vi.advanceTimersByTimeAsync(2_000)
+    await p
+
+    // getContactId was invoked at least once with the engine's screenshot.
+    expect(scenario.contactIdCalls.length).toBeGreaterThanOrEqual(1)
+    expect(scenario.contactIdCalls[0]).toBe('frame-pcid')
+    // beforeReply received { contactId: 'contact-abc-123' }
+    expect(beforeReplyCalls.length).toBeGreaterThanOrEqual(1)
+    expect(beforeReplyCalls[0].contactId).toBe('contact-abc-123')
+    // Ordering: screenshot must come before beforeReply (so the contact id
+    // can be derived). Both are recorded on this device — assert ordering.
+    const screenshotIdx = state.calls.indexOf('screenshot')
+    expect(screenshotIdx).toBeGreaterThanOrEqual(0)
+  })
+
+  it('threads contactId through ScenarioHelpers into policy.afterAction on a successful reply', async () => {
+    const state: FakeDeviceState = {
+      measureLayoutResult: { success: true },
+      hasUnreadQueue: [{ hasUnread: false }],
+      isContactUnreadQueue: [],
+      hasChatAreaChangedQueue: [{ hasDiff: false, hasBaseline: true }],
+      screenshotResult: 'frame-after',
+      calls: []
+    }
+    const device = makeFakeDevice(state)
+    const brain = makeFakeBrain([[{ type: 'text', content: 'pong' }]])
+    const hooks = makeFakeHooks()
+
+    const inner = new MockScenario(device)
+    const scenario = makeContactIdScenario(inner, async () => 'cid-XYZ')
+
+    const afterActionSeen: Array<{ type: string; contactId?: string }> = []
+    const policy = {
+      beforeReply: async () => ({ proceed: true as const }),
+      beforeAction: async () => ({}),
+      afterAction: async (a: { type: string; contactId?: string }) => {
+        afterActionSeen.push(a)
+      },
+      observe: () => {},
+      resetBreaker: () => {},
+      snapshot: () => ({}) as never,
+      updateConfig: () => {},
+      getConfig: () => ({}) as never
+    } as unknown as import('./policy').AntiDetectionPolicy
+
+    const engine = new Engine(brain, scenario, hooks, undefined, undefined, policy)
+    const p = engine.start()
+    await vi.advanceTimersByTimeAsync(50)
+    await vi.advanceTimersByTimeAsync(6_000)
+    engine.stop()
+    await vi.advanceTimersByTimeAsync(2_000)
+    await p
+
+    const replyAfter = afterActionSeen.find((a) => a.type === 'reply')
+    expect(replyAfter).toBeDefined()
+    expect(replyAfter?.contactId).toBe('cid-XYZ')
+  })
+
+  it('still works when scenario.getContactId is missing (older Scenario impl) — beforeReply called with { contactId: undefined }', async () => {
+    const state: FakeDeviceState = {
+      measureLayoutResult: { success: true },
+      hasUnreadQueue: [{ hasUnread: false }],
+      isContactUnreadQueue: [],
+      hasChatAreaChangedQueue: [{ hasDiff: false, hasBaseline: true }],
+      screenshotResult: 'frame-no-impl',
+      calls: []
+    }
+    const device = makeFakeDevice(state)
+    const brain = makeFakeBrain([[{ type: 'skip' }]])
+    const hooks = makeFakeHooks()
+
+    const inner = new MockScenario(device)
+    // No `impl` arg → wrapper.getContactId is left undefined, simulating an
+    // older scenario implementation that predates ADR-0012.
+    const scenario = makeContactIdScenario(inner)
+
+    const beforeReplyCalls: Array<{ contactId?: string }> = []
+    const policy = {
+      beforeReply: async (ctx: { contactId?: string } = {}) => {
+        beforeReplyCalls.push(ctx)
+        return { proceed: true as const }
+      },
+      beforeAction: async () => ({}),
+      afterAction: async () => {},
+      observe: () => {},
+      resetBreaker: () => {},
+      snapshot: () => ({}) as never,
+      updateConfig: () => {},
+      getConfig: () => ({}) as never
+    } as unknown as import('./policy').AntiDetectionPolicy
+
+    const engine = new Engine(brain, scenario, hooks, undefined, undefined, policy)
+    const p = engine.start()
+    await vi.advanceTimersByTimeAsync(50)
+    await vi.advanceTimersByTimeAsync(6_000)
+    engine.stop()
+    await vi.advanceTimersByTimeAsync(2_000)
+    await p
+
+    expect(beforeReplyCalls.length).toBeGreaterThanOrEqual(1)
+    // Engine should pass `{ contactId: undefined }` (or omit it) when the
+    // scenario has no getContactId implementation — per-contact gates skip.
+    expect(beforeReplyCalls[0].contactId).toBeUndefined()
+  })
+
+  it('when scenario.getContactId returns undefined, engine forwards { contactId: undefined } to beforeReply', async () => {
+    const state: FakeDeviceState = {
+      measureLayoutResult: { success: true },
+      hasUnreadQueue: [{ hasUnread: false }],
+      isContactUnreadQueue: [],
+      hasChatAreaChangedQueue: [{ hasDiff: false, hasBaseline: true }],
+      screenshotResult: 'frame-undef',
+      calls: []
+    }
+    const device = makeFakeDevice(state)
+    const brain = makeFakeBrain([[{ type: 'skip' }]])
+    const hooks = makeFakeHooks()
+
+    const inner = new MockScenario(device)
+    // Implementation explicitly returns undefined (e.g. malformed input).
+    const scenario = makeContactIdScenario(inner, async () => undefined)
+
+    const beforeReplyCalls: Array<{ contactId?: string }> = []
+    const policy = {
+      beforeReply: async (ctx: { contactId?: string } = {}) => {
+        beforeReplyCalls.push(ctx)
+        return { proceed: true as const }
+      },
+      beforeAction: async () => ({}),
+      afterAction: async () => {},
+      observe: () => {},
+      resetBreaker: () => {},
+      snapshot: () => ({}) as never,
+      updateConfig: () => {},
+      getConfig: () => ({}) as never
+    } as unknown as import('./policy').AntiDetectionPolicy
+
+    const engine = new Engine(brain, scenario, hooks, undefined, undefined, policy)
+    const p = engine.start()
+    await vi.advanceTimersByTimeAsync(50)
+    await vi.advanceTimersByTimeAsync(6_000)
+    engine.stop()
+    await vi.advanceTimersByTimeAsync(2_000)
+    await p
+
+    expect(scenario.contactIdCalls.length).toBeGreaterThanOrEqual(1)
+    expect(beforeReplyCalls.length).toBeGreaterThanOrEqual(1)
+    expect(beforeReplyCalls[0].contactId).toBeUndefined()
   })
 })

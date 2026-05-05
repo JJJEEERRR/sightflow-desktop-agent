@@ -89,12 +89,13 @@ export class Engine {
    * underlying engine state (policy, hooks, log routing) is shared by
    * reference.
    */
-  private scenarioHelpers(): ScenarioHelpers {
+  private scenarioHelpers(contactId?: string): ScenarioHelpers {
     return {
       emitLog: (type, content) => this.emitLog(type, content),
       sleep: (ms) => this.sleep(ms),
       policy: this.policy,
-      hooks: this.hooks
+      hooks: this.hooks,
+      contactId
     }
   }
 
@@ -235,9 +236,25 @@ export class Engine {
    *   - 横切关注点：policy 门控、screenshot hash 观测、OCR 采样
    */
   private async processCurrentChat(): Promise<void> {
+    // Take the screenshot first so we can derive a per-contact identifier
+    // before the policy gate runs — the rate-limiter's per-contact cap
+    // needs to know which contact this tick is for. The screenshot itself
+    // is cheap (already cached upstream) and gating after it lets the
+    // breaker's screenshotHash freeze-detection signal still fire on
+    // every tick that passes the gate.
+    const screenshot = await this.scenario.screenshot()
+    this.emitLog('thinking', '截图完成，请求 AI 分析...')
+
+    // Per-contact rate-limit plumbing. Derive an opaque, stable contactId so
+    // the rate limiter can enforce per-contact daily caps. If the scenario
+    // can't figure out who we're talking to (no implementation, or it
+    // returned undefined), per-contact gates skip — global rate limits
+    // still apply. See ADR-0012.
+    const contactId = (await this.scenario.getContactId?.(screenshot)) ?? undefined
+
     // ── Phase 3: anti-detection gate ────────────────────────────────────
     if (this.policy) {
-      const gate = await this.policy.beforeReply()
+      const gate = await this.policy.beforeReply({ contactId })
       if (!gate.proceed) {
         if (gate.pause) {
           // Circuit breaker tripped — pause the lifecycle and exit the loop.
@@ -257,9 +274,6 @@ export class Engine {
         return
       }
     }
-
-    const screenshot = await this.scenario.screenshot()
-    this.emitLog('thinking', '截图完成，请求 AI 分析...')
 
     // Phase 3 cleanup: feed the screenshot's content hash to the breaker so its
     // freeze-detection signal actually fires. SHA-256 is exact-match (no
@@ -312,7 +326,7 @@ export class Engine {
         }
         if (stream.decision) {
           sawDecision = true
-          await this.scenario.execute(stream.decision, this.scenarioHelpers())
+          await this.scenario.execute(stream.decision, this.scenarioHelpers(contactId))
         }
       }
       if (sawDecision) this.policy?.observe({ type: 'aiSuccess' })

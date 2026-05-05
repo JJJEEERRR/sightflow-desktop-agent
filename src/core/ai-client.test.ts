@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi, type MockInstance } from 'vitest'
 import { AIClient } from './ai-client'
+import { configureLogger, resetLoggerForTests, RingBufferSink } from './observability'
 
 // vitest's `MockInstance<TArgs, TReturn>` keeps the call-arg tuple narrow at
 // the assignment site, where `ReturnType<typeof vi.spyOn>` would widen to
@@ -28,14 +29,20 @@ function chatCompletion(content: string): unknown {
 }
 
 let fetchSpy: FetchSpy
+let logBuffer: RingBufferSink
 
 beforeEach(() => {
   // Replace global fetch with a spy. Each test sets the desired behaviour.
   fetchSpy = vi.spyOn(globalThis, 'fetch')
+  // Capture every record AIClient writes — tests assert on this in lieu of
+  // inspecting console output (production code only ever talks to the logger).
+  logBuffer = new RingBufferSink({ size: 100 })
+  configureLogger({ env: 'dev', sinks: [logBuffer], minLevel: 'trace' })
 })
 
 afterEach(() => {
   vi.restoreAllMocks()
+  resetLoggerForTests()
 })
 
 describe('AIClient.constructor', () => {
@@ -77,12 +84,14 @@ describe('AIClient.getReply', () => {
 
   it('throws and logs on a non-2xx HTTP status', async () => {
     fetchSpy.mockResolvedValueOnce(jsonResponse(401, { error: 'unauth' }))
-    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
     const client = new AIClient({ apiKey: 'k' })
 
     await expect(client.getReply('img')).rejects.toThrowError(/401/)
-    expect(errSpy).toHaveBeenCalled()
-    errSpy.mockRestore()
+    const errorRecords = logBuffer.getAll().filter((r) => r.level === 'error')
+    expect(errorRecords.length).toBeGreaterThan(0)
+    expect(errorRecords.some((r) => r.phase === 'ai-client' && r.msg.includes('non-2xx'))).toBe(
+      true
+    )
   })
 
   it('forwards the bearer token and OpenAI-compatible payload shape', async () => {

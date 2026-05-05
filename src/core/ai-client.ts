@@ -6,6 +6,10 @@
 //   1. 聊天回复：截图 → AI 分析 → 回复文字
 //   2. VLM 视觉检测：截图 → AI 分析 → bbox/point 坐标
 
+import { getLogger } from './observability'
+
+const log = getLogger('ai-client')
+
 export interface AIClientConfig {
   apiKey: string
   model: string
@@ -69,15 +73,18 @@ export class AIClient {
   async getReply(screenshotBase64: string): Promise<string | null> {
     const startTime = Date.now()
     try {
-      console.log('[AIClient] getReply 开始...')
+      log.info('getReply start')
       const replyText = await this.callVision(
         this.config.systemPrompt,
         '请根据截图中微信聊天窗口的最新消息进行回复。',
         screenshotBase64
       )
 
-      const elapsed = ((Date.now() - startTime) / 1000).toFixed(1)
-      console.log(`[AIClient] getReply 完成 (${elapsed}s):`, replyText?.slice(0, 100))
+      const elapsedMs = Date.now() - startTime
+      log.info('getReply done', {
+        elapsedMs,
+        preview: replyText?.slice(0, 100) ?? null
+      })
 
       if (!replyText || replyText.trim() === '[SKIP]') {
         return null
@@ -85,9 +92,8 @@ export class AIClient {
 
       return replyText.trim()
     } catch (error) {
-      const elapsed = ((Date.now() - startTime) / 1000).toFixed(1)
-      const message = error instanceof Error ? error.message : String(error)
-      console.error(`[AIClient] 聊天回复失败 (${elapsed}s):`, message)
+      const elapsedMs = Date.now() - startTime
+      log.error('getReply failed', { err: error, elapsedMs })
       throw error
     }
   }
@@ -176,10 +182,12 @@ export class AIClient {
       thinking: { type: 'disabled' },
       stream: false
     })
-    const bodySizeKB = (bodyStr.length / 1024).toFixed(0)
-    console.log(
-      `[AIClient] callAPI 开始 | model=${this.config.model} | payload=${bodySizeKB}KB | timeout=${TIMEOUT_MS / 1000}s`
-    )
+    const bodySizeKB = Math.round(bodyStr.length / 1024)
+    log.debug('callAPI start', {
+      model: this.config.model,
+      payloadKB: bodySizeKB,
+      timeoutMs: TIMEOUT_MS
+    })
 
     const controller = new AbortController()
     const timer = setTimeout(() => controller.abort(), TIMEOUT_MS)
@@ -195,27 +203,29 @@ export class AIClient {
         signal: controller.signal
       })
 
-      const fetchElapsed = ((Date.now() - callStart) / 1000).toFixed(1)
-      console.log(`[AIClient] 收到响应 status=${response.status} (${fetchElapsed}s)`)
+      const fetchElapsedMs = Date.now() - callStart
+      log.debug('callAPI response', { status: response.status, elapsedMs: fetchElapsedMs })
 
       if (!response.ok) {
         const errorText = await response.text()
-        console.error(`[AIClient] API 错误: ${response.status}`, errorText)
+        log.error('callAPI non-2xx', {
+          status: response.status,
+          body: errorText.slice(0, 500)
+        })
         throw new Error(`API request failed: ${response.status} - ${errorText.slice(0, 200)}`)
       }
 
       const json = (await response.json()) as ChatCompletionResponse
-      const totalElapsed = ((Date.now() - callStart) / 1000).toFixed(1)
-      console.log(`[AIClient] 解析完成 (${totalElapsed}s)`)
+      const totalElapsedMs = Date.now() - callStart
+      log.debug('callAPI parsed', { elapsedMs: totalElapsedMs })
       return json
     } catch (error) {
-      const elapsed = ((Date.now() - callStart) / 1000).toFixed(1)
+      const elapsedMs = Date.now() - callStart
       if (error instanceof Error && error.name === 'AbortError') {
-        console.error(`[AIClient] ⏱ 超时！已等待 ${elapsed}s，上限 ${TIMEOUT_MS / 1000}s`)
+        log.error('callAPI timeout', { elapsedMs, timeoutMs: TIMEOUT_MS })
         throw new Error(`AI API 请求超时 (${TIMEOUT_MS / 1000}s)`)
       }
-      const message = error instanceof Error ? error.message : String(error)
-      console.error(`[AIClient] 请求异常 (${elapsed}s):`, message)
+      log.error('callAPI request exception', { err: error, elapsedMs })
       throw error
     } finally {
       clearTimeout(timer)
@@ -231,7 +241,9 @@ export class AIClient {
     if (typeof content === 'string' && content.length > 0) {
       return content
     }
-    console.warn('[AIClient] 无法解析回复格式:', JSON.stringify(responseData).slice(0, 500))
+    log.warn('extractText: unparseable response', {
+      preview: JSON.stringify(responseData).slice(0, 500)
+    })
     return ''
   }
 

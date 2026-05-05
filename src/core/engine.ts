@@ -12,27 +12,63 @@
 
 import { AgentHooks, ReplyAction, ActionItem } from './hooks'
 import { DesktopDevice } from './device'
+import { getLogger, newTraceId, type Logger } from './observability'
+import { Lifecycle, type LifecycleState } from './runtime'
 
 export class Engine {
   private running = false
   private consecutiveUnreadFailures = 0
+  private readonly log: Logger
+  private readonly lifecycle: Lifecycle
+  private currentTraceId: string | undefined
 
   constructor(
     private hooks: AgentHooks,
     private device: DesktopDevice,
-    private onLog?: (type: string, content: string) => void
-  ) {}
+    private onLog?: (type: string, content: string) => void,
+    lifecycle?: Lifecycle
+  ) {
+    this.lifecycle = lifecycle ?? new Lifecycle()
+    this.log = getLogger('engine')
+  }
 
+  /**
+   * Returns the engine's lifecycle. Main process subscribes to its events to
+   * propagate state to the renderer and drive `powerSaveBlocker`.
+   */
+  getLifecycle(): Lifecycle {
+    return this.lifecycle
+  }
+
+  /**
+   * Bridges the legacy renderer-facing log channel and the structured logger.
+   * The legacy `engine:log` IPC payload (type, content) is preserved for the
+   * current UI; the same record is also fanned out to all configured
+   * observability sinks (file, ring buffer, console in dev).
+   */
   private emitLog(type: 'thinking' | 'reply' | 'skip' | 'error', content: string): void {
     if (this.onLog) this.onLog(type, content)
-    else console.log(`[Engine-${type}] ${content}`)
+    const child = this.log.child(`engine.${type}`, this.currentTraceId)
+    if (type === 'error') child.error(content)
+    else child.info(content)
+  }
+
+  /** Safely transitions the lifecycle to a terminal stop, ignoring illegal-from states. */
+  private safeStopLifecycle(): void {
+    const state: LifecycleState = this.lifecycle.getState()
+    if (state === 'running' || state === 'paused' || state === 'crashed') {
+      this.lifecycle.stop()
+    }
   }
 
   async start(): Promise<void> {
+    if (this.running) return
     this.running = true
+    if (this.lifecycle.getState() === 'idle') {
+      this.lifecycle.start()
+    }
     await this.hooks.onEngineStart?.()
 
-    // 注册外部触发器
     this.hooks.onExternalTrigger?.((params) => {
       this.executeExternalActions(params)
     })
@@ -43,7 +79,11 @@ export class Engine {
       const measureResult = await this.device.measureLayout()
 
       if (!measureResult.success) {
-        this.emitLog('error', (measureResult.error || '布局测量失败') + '，引擎无法启动')
+        const reason = measureResult.error || '布局测量失败'
+        this.emitLog('error', `${reason}，引擎无法启动`)
+        if (this.lifecycle.getState() === 'running') {
+          this.lifecycle.crash(new Error(reason))
+        }
         this.running = false
         await this.hooks.onEngineStop?.()
         return
@@ -53,30 +93,45 @@ export class Engine {
 
       // ── 主循环 ──
       while (this.running) {
+        // Allocate a fresh traceId per tick so emitLog/logger calls are correlatable.
+        this.currentTraceId = newTraceId()
         try {
           await this.processCurrentChat()
 
           if (!this.running) break
 
-          // 处理完当前对话后，检查是否还有下一条未读
           await this.waitForNextUnread()
         } catch (e) {
-          this.emitLog('error', `循环异常: ${String(e)}`)
-          this.hooks.onError?.(e as Error, 'engine_loop')
-          // 异常后等一段时间再重试
+          const err = e instanceof Error ? e : new Error(String(e))
+          this.emitLog('error', `循环异常: ${err.message}`)
+          this.hooks.onError?.(err, 'engine_loop')
           await this.sleep(3000 + Math.random() * 2000)
         }
       }
     } catch (e) {
-      this.emitLog('error', `引擎启动失败: ${String(e)}`)
-      this.hooks.onError?.(e as Error, 'engine_start')
+      const err = e instanceof Error ? e : new Error(String(e))
+      this.emitLog('error', `引擎启动失败: ${err.message}`)
+      this.hooks.onError?.(err, 'engine_start')
+      if (this.lifecycle.getState() === 'running') {
+        this.lifecycle.crash(err)
+      }
+    } finally {
+      this.currentTraceId = undefined
     }
 
     await this.hooks.onEngineStop?.()
+    // If the loop exited normally (stop() flipped `this.running`), the lifecycle
+    // was already moved to 'stopped' by stop(). If we're still in 'running' here
+    // (e.g. measureLayout returned without success but didn't crash), do a
+    // graceful stop so observers see a terminal state.
+    if (this.lifecycle.getState() === 'running') {
+      this.lifecycle.stop()
+    }
   }
 
   stop(): void {
     this.running = false
+    this.safeStopLifecycle()
     this.device.clearChatBaseline()
   }
 
@@ -291,8 +346,9 @@ export class Engine {
           break
       }
     } catch (e) {
-      this.emitLog('error', `执行动作失败: ${String(e)}`)
-      this.hooks.onError?.(e as Error, 'execute_action')
+      const err = e instanceof Error ? e : new Error(String(e))
+      this.emitLog('error', `执行动作失败: ${err.message}`)
+      this.hooks.onError?.(err, 'execute_action')
     }
   }
 
@@ -302,7 +358,9 @@ export class Engine {
   }): Promise<void> {
     if (this.hooks.executeActions) {
       for await (const result of this.hooks.executeActions(params)) {
-        console.log('[Engine] External action result:', result)
+        this.log.info('External action result', {
+          result: result as unknown as Record<string, unknown>
+        })
       }
     }
   }

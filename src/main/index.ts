@@ -1,4 +1,4 @@
-import { app, shell, BrowserWindow, ipcMain, desktopCapturer } from 'electron'
+import { app, shell, BrowserWindow, ipcMain, desktopCapturer, powerSaveBlocker } from 'electron'
 import { join } from 'path'
 import { electronApp, optimizer, is } from '@electron-toolkit/utils'
 import icon from '../../resources/icon.png?asset'
@@ -9,6 +9,15 @@ import { LocalHooks } from '../core/local-hooks'
 import { AIClient, type AIClientConfig } from '../core/ai-client'
 import { RPADevice } from '../core/rpa-device'
 import type { AppType } from '../core/rpa/types'
+import {
+  configureLogger,
+  ConsoleSink,
+  RingBufferSink,
+  JsonFileSink,
+  getLogger,
+  type LogRecord
+} from '../core/observability'
+import type { LifecycleEvent, LifecycleSnapshot } from '../core/runtime'
 
 // `electron-store` ships both CJS and ESM bundles; in some bundlers the import
 // arrives as `{ default: Store }`, in others as `Store` directly. This handles
@@ -30,6 +39,48 @@ interface EngineStartConfig {
 
 let engine: Engine | null = null
 let localHooks: LocalHooks | null = null
+let powerSaveBlockerId: number | null = null
+let unsubscribeLifecycle: (() => void) | null = null
+
+// ── Observability boot ─────────────────────────────────────────────────────
+// Constructed at module load so anything that runs before app.whenReady() is
+// captured (logger started in 'init' state). Sinks fan out:
+//   - Console (dev only): tail-friendly colored output
+//   - RingBuffer: 2k records, used by ipcMain.handle('logs:recent', …)
+//   - JSONL file: ~/Library/Application Support/<app>/logs/YYYY-MM-DD.jsonl
+//   - RendererSink: forwards to the focused window via 'engine:log-record'
+const logRingBuffer = new RingBufferSink({ size: 2000 })
+
+const rendererSink = {
+  write(record: LogRecord): void {
+    const win = BrowserWindow.getAllWindows()[0]
+    if (win && !win.isDestroyed()) {
+      win.webContents.send('engine:log-record', record)
+    }
+  }
+}
+
+const logsDir = join(app.getPath('userData'), 'logs')
+const fileSink = new JsonFileSink({ dir: logsDir, dailyRotation: true, maxDays: 14 })
+
+configureLogger({
+  env: is.dev ? 'dev' : 'prod',
+  sinks: [new ConsoleSink({ colorize: is.dev }), logRingBuffer, fileSink, rendererSink],
+  minLevel: is.dev ? 'debug' : 'info'
+})
+
+const log = getLogger('main')
+
+// ── Process-level safety nets ──────────────────────────────────────────────
+// In Phase 1 we *log* these and let the process keep running — Phase 2 will
+// add a Watchdog/auto-restart. Without this, an unhandled promise rejection
+// in a deep RPA leaf would silently lose state.
+process.on('unhandledRejection', (reason) => {
+  log.error('unhandledRejection', { err: reason })
+})
+process.on('uncaughtException', (err) => {
+  log.error('uncaughtException', { err })
+})
 
 function createWindow(): void {
   // Create the browser window.
@@ -85,8 +136,7 @@ app.whenReady().then(async () => {
     optimizer.watchWindowShortcuts(window)
   })
 
-  // IPC test
-  ipcMain.on('ping', () => console.log('pong'))
+  ipcMain.on('ping', () => log.debug('pong'))
 
   // ── Settings 持久化 ──
   ipcMain.handle('settings:getAll', async () => {
@@ -126,12 +176,39 @@ app.whenReady().then(async () => {
         }
       })
 
+      // Subscribe to lifecycle transitions: forward to renderer over a
+      // dedicated channel, and gate the powerSaveBlocker on the running state.
+      unsubscribeLifecycle?.()
+      unsubscribeLifecycle = engine.getLifecycle().subscribe((event: LifecycleEvent) => {
+        const win = BrowserWindow.getAllWindows()[0]
+        if (win && !win.isDestroyed()) {
+          win.webContents.send('engine:state', {
+            event,
+            snapshot: engine?.getLifecycle().snapshot()
+          })
+        }
+
+        if (event.to === 'running') {
+          if (powerSaveBlockerId === null) {
+            powerSaveBlockerId = powerSaveBlocker.start('prevent-app-suspension')
+            log.info('powerSaveBlocker started', { id: powerSaveBlockerId })
+          }
+        } else if (event.to === 'stopped' || event.to === 'crashed') {
+          if (powerSaveBlockerId !== null) {
+            powerSaveBlocker.stop(powerSaveBlockerId)
+            log.info('powerSaveBlocker stopped', { id: powerSaveBlockerId })
+            powerSaveBlockerId = null
+          }
+        }
+      })
+
       engine.start().catch((err) => {
-        console.error('[Main] Engine loop error:', err)
+        log.error('Engine loop error', { err })
       })
 
       return { success: true }
     } catch (error) {
+      log.error('engine:start failed', { err: error })
       return {
         success: false,
         error: error instanceof Error ? error.message : String(error)
@@ -147,6 +224,19 @@ app.whenReady().then(async () => {
 
   ipcMain.handle('engine:status', async () => {
     return { running: engine?.isRunning() ?? false }
+  })
+
+  // Returns the latest lifecycle snapshot. Renderer can poll this on connect
+  // to reconcile its UI before the next 'engine:state' event arrives.
+  ipcMain.handle('engine:lifecycle', async (): Promise<LifecycleSnapshot | null> => {
+    return engine?.getLifecycle().snapshot() ?? null
+  })
+
+  // Returns the most recent N log records. Used by the future Diagnostics tab
+  // and is already useful for ad-hoc debugging via DevTools.
+  ipcMain.handle('logs:recent', async (_event, limit: number = 200): Promise<LogRecord[]> => {
+    const all = logRingBuffer.getAll()
+    return all.slice(-Math.min(Math.max(limit, 1), 2000))
   })
 
   ipcMain.handle(
@@ -171,9 +261,6 @@ app.whenReady().then(async () => {
     }
   )
 
-  // IPC test
-  ipcMain.on('ping', () => console.log('pong'))
-
   ipcMain.handle('capture-screen', async () => {
     try {
       const sources = await desktopCapturer.getSources({
@@ -185,7 +272,7 @@ app.whenReady().then(async () => {
       }
       return null
     } catch (error) {
-      console.error('Screen capture failed:', error)
+      log.error('Screen capture failed', { err: error })
       return null
     }
   })

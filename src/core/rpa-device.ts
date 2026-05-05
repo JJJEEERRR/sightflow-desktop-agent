@@ -31,6 +31,9 @@ import {
   setLayoutCache
 } from './rpa/vision-utils'
 import { getWechatWindowInfo } from './rpa/window-utils'
+import { getLogger } from './observability'
+
+const log = getLogger('rpa-device')
 
 export class RPADevice implements DesktopDevice {
   private appType: AppType = 'weixin'
@@ -58,12 +61,11 @@ export class RPADevice implements DesktopDevice {
    */
   async measureLayout(): Promise<{ success: boolean; error?: string }> {
     if (!this.aiClient) {
-      console.error('[RPADevice] aiClient 未初始化，无法测量布局')
+      log.error('measureLayout aborted: aiClient not initialized')
       return { success: false, error: 'AI Client 未初始化' }
     }
 
     try {
-      // 提前校验应用窗口，避免大模型成本和迷惑性报错
       const windowInfo = await getWechatWindowInfo(this.appType)
       if (!windowInfo) {
         const appName =
@@ -71,24 +73,23 @@ export class RPADevice implements DesktopDevice {
         return { success: false, error: `未找到${appName}窗口，请确保已打开且未被完全遮挡/最小化` }
       }
 
-      console.log('[RPADevice] 开始布局测量（并行）...')
+      log.info('measureLayout start (parallel VLM)')
 
       const [unreadResult, layoutResult] = await Promise.allSettled([
         detectUnreadAreaFn(this.aiClient, this.appType),
         detectWechatLayout(this.aiClient, this.appType)
       ])
 
-      // 检查结果
       const unreadOk = unreadResult.status === 'fulfilled' && unreadResult.value.success
       const layoutOk = layoutResult.status === 'fulfilled' && layoutResult.value.success
 
-      console.log('[RPADevice] VLM 检测结果:', {
-        detectUnreadArea: unreadOk ? '✓' : '✗',
-        detectWechatLayout: layoutOk ? '✓' : '✗'
+      log.info('VLM detection results', {
+        detectUnreadArea: unreadOk,
+        detectWechatLayout: layoutOk
       })
 
       if (unreadResult.status === 'fulfilled' && unreadResult.value.success) {
-        console.log('[RPADevice] 未读区域:', {
+        log.debug('unread area detected', {
           chatEntrance: unreadResult.value.chatEntranceArea?.coordinates,
           firstContact: unreadResult.value.firstContact?.coordinates
         })
@@ -99,22 +100,23 @@ export class RPADevice implements DesktopDevice {
             : unreadResult.value.success === false
               ? unreadResult.value.error
               : undefined
-        console.error('[RPADevice] 未读区域检测失败:', error)
+        log.error('unread area detection failed', { err: error })
       }
 
       if (layoutResult.status === 'fulfilled' && layoutResult.value.success) {
-        console.log('[RPADevice] 主布局:', {
+        log.debug('main layout detected', {
           searchInputBox: layoutResult.value.searchInputBox?.coordinates,
           headerArea: layoutResult.value.headerArea?.coordinates,
           chatMainArea: layoutResult.value.chatMainArea?.coordinates
         })
 
-        // 从 chatMainArea 反推 inputArea（纯计算）
         const inputArea = getInputAreaFromCache(this.appType)
         if (inputArea) {
-          console.log('[RPADevice] 输入框（反推）:', inputArea.coordinates)
+          log.debug('input area (derived from chatMainArea)', {
+            coordinates: inputArea.coordinates
+          })
         } else {
-          console.warn('[RPADevice] 输入框反推失败')
+          log.warn('input-area derivation from cache failed')
         }
       } else {
         const error =
@@ -123,13 +125,11 @@ export class RPADevice implements DesktopDevice {
             : layoutResult.value.success === false
               ? layoutResult.value.error
               : undefined
-        console.warn('[RPADevice] 主布局检测失败（非致命）:', error)
+        log.warn('main layout detection failed (non-fatal)', { err: error })
       }
 
-      // 核心判定：只要 detectUnreadArea 成功就算测量通过
-      // chatEntranceArea 是轮询红点的必要条件
       if (!unreadOk) {
-        console.error('[RPADevice] 布局测量失败：未读区域检测是必要条件')
+        log.error('measureLayout failed: unread area is mandatory')
         const errorMsg =
           unreadResult.status === 'fulfilled' && !unreadResult.value.success
             ? unreadResult.value.error || '未读区域检测是必要条件'
@@ -137,10 +137,10 @@ export class RPADevice implements DesktopDevice {
         return { success: false, error: `布局测量失败: ${errorMsg}` }
       }
 
-      console.log('[RPADevice] 布局测量完成 ✓')
+      log.info('measureLayout done')
       return { success: true }
     } catch (error) {
-      console.error('[RPADevice] 布局测量异常:', error)
+      log.error('measureLayout exception', { err: error })
       return { success: false, error: String(error) }
     }
   }
@@ -161,14 +161,14 @@ export class RPADevice implements DesktopDevice {
     chatEntranceArea?: { bbox: BBox; coordinates: [number, number] }
   }> {
     if (!this.aiClient) {
-      console.warn('[RPADevice] aiClient 未初始化，无法进行视觉检测')
+      log.warn('hasUnreadMessage: aiClient not initialized')
       return { hasUnread: false }
     }
 
     const result = await hasUnreadMessageDetect(this.aiClient, this.appType)
 
     if (!result.success) {
-      console.error('[RPADevice] hasUnreadMessage 失败:', result.error)
+      log.error('hasUnreadMessage failed', { err: result.error })
       return { hasUnread: false }
     }
 
@@ -183,14 +183,14 @@ export class RPADevice implements DesktopDevice {
     firstContactCoords?: [number, number]
   }> {
     if (!this.aiClient) {
-      console.warn('[RPADevice] aiClient 未初始化')
+      log.warn('isChatContactUnread: aiClient not initialized')
       return { isUnread: false }
     }
 
     const result = await isChatContactUnreadDetect(this.aiClient, this.appType)
 
     if (!result.success) {
-      console.error('[RPADevice] isChatContactUnread 失败:', result.error)
+      log.error('isChatContactUnread failed', { err: result.error })
       return { isUnread: false }
     }
 
@@ -210,7 +210,7 @@ export class RPADevice implements DesktopDevice {
       cache.chatEntranceArea = null
       cache.firstContact = null
       setLayoutCache(this.appType, cache)
-      console.log('[RPADevice] 已清除未读区域缓存')
+      log.info('cleared unread-area cache')
     }
   }
 

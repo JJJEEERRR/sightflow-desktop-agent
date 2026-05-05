@@ -1,8 +1,12 @@
-import { afterEach, beforeEach, describe, expect, it, vi, type MockInstance } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { LocalHooks } from './local-hooks'
 import type { ReplyAction } from './hooks'
-
-type ConsoleSpy = MockInstance<unknown[], void>
+import {
+  configureLogger,
+  resetLoggerForTests,
+  RingBufferSink,
+  type LogRecord
+} from './observability'
 
 // Mock the AIClient module — every LocalHooks instance constructs one, and we
 // want fully deterministic behaviour without touching the network.
@@ -31,29 +35,22 @@ vi.mock('./ai-client', () => {
   }
 })
 
-// We type spies with a hand-rolled `ConsoleSpy` alias because
-// `ReturnType<typeof vi.spyOn>` resolves to a generic `MockInstance` whose
-// argument tuple can't be re-narrowed at the assignment site, and vitest's
-// `vi.spyOn<T, K>` two-arg generic doesn't survive `ReturnType<...>` inference.
-let logSpy: ConsoleSpy
-let warnSpy: ConsoleSpy
-let errorSpy: ConsoleSpy
+// LocalHooks now writes through the structured logger. Capture every record
+// in an in-memory ring buffer so tests can assert on the level/phase/msg.
+let logBuffer: RingBufferSink
+
+function recordsAt(level: LogRecord['level']): LogRecord[] {
+  return logBuffer.getAll().filter((r) => r.level === level)
+}
 
 beforeEach(() => {
-  // The intermediate `as unknown` step suppresses the variance-incompatibility
-  // diagnostic between vitest's narrowly-typed `MockInstance<[message?: any,
-  // ...optional: any[]], void>` (the inferred type from `vi.spyOn(console, 'X')`)
-  // and our `MockInstance<unknown[], void>` alias. The runtime contract is the
-  // same.
-  logSpy = vi.spyOn(console, 'log').mockImplementation(() => {}) as unknown as ConsoleSpy
-  warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {}) as unknown as ConsoleSpy
-  errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {}) as unknown as ConsoleSpy
+  logBuffer = new RingBufferSink({ size: 100 })
+  configureLogger({ env: 'dev', sinks: [logBuffer], minLevel: 'trace' })
 })
 
 afterEach(() => {
-  logSpy.mockRestore()
-  warnSpy.mockRestore()
-  errorSpy.mockRestore()
+  vi.restoreAllMocks()
+  resetLoggerForTests()
 })
 
 async function collect<T>(iter: AsyncIterable<T>): Promise<T[]> {
@@ -65,17 +62,16 @@ async function collect<T>(iter: AsyncIterable<T>): Promise<T[]> {
 describe('LocalHooks.onEngineStart', () => {
   it('calls testConnection and does not throw on failure', async () => {
     const hooks = new LocalHooks({ ai: { apiKey: 'k' } })
-    // Force the underlying mocked AIClient to report a failure
     const ai = (hooks as unknown as { aiClient: { testConnectionResult: unknown } }).aiClient
     ai.testConnectionResult = { success: false, error: 'no key' }
     await expect(hooks.onEngineStart()).resolves.toBeUndefined()
-    expect(errorSpy).toHaveBeenCalled()
+    expect(recordsAt('error')).not.toHaveLength(0)
   })
 
   it('logs OK when testConnection succeeds', async () => {
     const hooks = new LocalHooks({ ai: { apiKey: 'k' } })
     await hooks.onEngineStart()
-    expect(logSpy).toHaveBeenCalledWith('[LocalHooks] AI API 连接正常')
+    expect(recordsAt('info').some((r) => r.msg.includes('AI API 连接正常'))).toBe(true)
   })
 })
 
@@ -114,7 +110,7 @@ describe('LocalHooks.getReply', () => {
 
     const actions = await collect(hooks.getReply({ screenshot: 'X' }))
     expect(actions[actions.length - 1]).toEqual({ type: 'skip' })
-    expect(errorSpy).toHaveBeenCalled()
+    expect(recordsAt('error')).not.toHaveLength(0)
   })
 })
 

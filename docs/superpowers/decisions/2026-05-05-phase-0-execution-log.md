@@ -373,3 +373,33 @@ commit --trailer "Co-authored-by: Cursor <cursoragent@cursor.com>" -m "this shou
   conventional commit subject and was processed by commit-msg without issue
   (you can see them in `git log`). Plus I verified the rule directly via
   stdin (T5-2). The hook is wired and working.
+
+---
+
+## 2026-05-05 - CI hot-fix: Python 3.11 pin for native-module rebuild
+
+### CI-1: First CI run after PAT fix exposed Python 3.12 / node-gyp@9 incompat
+
+- **What**: PR #1 first CI run results:
+  - Lint & Typecheck: PASS
+  - Test (windows-latest + macos-latest): FAIL at
+    pm ci step
+  - Build Verify (windows-latest + macos-latest): FAIL at
+    pm ci step
+- **Root cause**: GitHub runner default Python = 3.12. `node-gyp@9.4.1` (transitive
+  dep of node-window-manager / robotjs) imports `distutils` which was removed
+  from Python 3.12 stdlib (PEP 632). Confirmed by raw runner log:
+  `ModuleNotFoundError: No module named 'distutils'` in
+  `node_modules/node-gyp/gyp/pylib/gyp/input.py:19`.
+- **Fix**: added `actions/setup-python@v5` with `python-version: '3.11'` step
+  to both `test.yml` and `build-verify.yml`, just before `npm ci`. The
+  `lint-typecheck.yml` workflow already uses `--ignore-scripts` so it
+  doesn't need the pin.
+- **Why this fix vs alternatives**: see ADR-0003 for full reasoning. Briefly:
+  upgrading node-gyp via `npm overrides` is riskier (different vendored gyp
+  shape); this is a 4-line YAML change that's purely CI-scoped.
+- **Trade-offs**: adds ~10-20s/job startup. Pinned 3.11 will need un-pinning
+  when the upstream native-module deps release versions that bundle node-gyp@10.
+  Tracked via "supersedes" mechanism in ADR-0003.
+- **Reversibility**: delete the `actions/setup-python@v5` block from both
+  workflows.

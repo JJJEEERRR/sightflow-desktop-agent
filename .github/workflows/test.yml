@@ -29,6 +29,13 @@ jobs:
           node-version-file: '.nvmrc'
           cache: 'npm'
 
+      # node-gyp@9 (bundled with Node 22) imports `distutils`, which was removed
+      # from Python's stdlib in 3.12. GitHub runners ship 3.12 by default, so we
+      # pin Python 3.11 just for the native-module rebuild step. See ADR-0003.
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
       - name: Install dependencies (with native rebuild)
         run: npm ci
 

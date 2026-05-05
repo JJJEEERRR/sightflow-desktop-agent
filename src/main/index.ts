@@ -41,6 +41,28 @@ import {
   type AntiDetectionConfig,
   type KvStorage
 } from '../core/policy'
+import {
+  CaptureScreenSchema,
+  DiagExportSchema,
+  EngineLifecycleSchema,
+  EngineStartSchema,
+  EngineStatusSchema,
+  EngineStopSchema,
+  EngineTestConnectionSchema,
+  EngineUpdateConfigSchema,
+  LogsRecentSchema,
+  parseIpc,
+  PolicyGetSchema,
+  PolicyResetBreakerSchema,
+  PolicySetSchema,
+  PolicySnapshotSchema,
+  SettingsGetAllSchema,
+  SettingsGetSchema,
+  SettingsSetSchema,
+  TestVlmParallelSchema
+} from './ipc-schemas'
+import { buildDiagnosticsZip } from './diagnostics-export'
+import { securityHeaders } from './security-headers'
 
 // `electron-store` ships both CJS and ESM bundles; in some bundlers the import
 // arrives as `{ default: Store }`, in others as `Store` directly. This handles
@@ -140,8 +162,75 @@ process.on('uncaughtException', (err) => {
   log.error('uncaughtException', { err })
 })
 
+/**
+ * Install Content-Security-Policy and ancillary security headers on every
+ * response served to the renderer. The actual policy is constructed by
+ * `securityHeaders()` (see `./security-headers.ts`) which is unit-tested
+ * standalone — keep this function thin so the wiring stays auditable.
+ *
+ * `webRequest` is bound to the per-window `session`, not the default session,
+ * so this only affects the renderer for `mainWindow`. Subsequent windows
+ * inherit the same session today (we don't use partitions) but explicit
+ * scoping here keeps the blast radius tight if that ever changes.
+ */
+function attachSecurityHeaders(mainWindow: BrowserWindow): void {
+  const headers = securityHeaders({ isDev: is.dev })
+  mainWindow.webContents.session.webRequest.onHeadersReceived((details, callback) => {
+    callback({
+      responseHeaders: {
+        ...details.responseHeaders,
+        ...headers
+      }
+    })
+  })
+}
+
+/**
+ * Block the renderer from navigating away from its initial origin. This is a
+ * common XSS escape vector: an injected `<a target="_top">` or a stray
+ * `window.location = …` could otherwise pivot the renderer onto an
+ * attacker-controlled page that could then attempt postMessage / IPC
+ * shenanigans against our preload bridge.
+ *
+ * Allowlist:
+ *   - Dev: `ELECTRON_RENDERER_URL` (Vite HMR loopback) and any same-origin
+ *     navigation under it (Vite full-reload uses same-origin redirects).
+ *   - Prod: only the `file://` URL we initially loaded; nothing else.
+ *
+ * `setWindowOpenHandler` already routes new-window/target=_blank traffic
+ * through `shell.openExternal`, so this guard purely covers in-place
+ * navigations.
+ */
+function attachNavigationGuard(mainWindow: BrowserWindow, initialUrl: string): void {
+  let initialOrigin: string | null = null
+  try {
+    initialOrigin = new URL(initialUrl).origin
+  } catch {
+    // file:// URLs in Electron parse fine; if URL parsing throws here we
+    // err on the side of safety and fall through to deny-all.
+    initialOrigin = null
+  }
+
+  mainWindow.webContents.on('will-navigate', (event, url) => {
+    let nextOrigin: string | null = null
+    try {
+      nextOrigin = new URL(url).origin
+    } catch {
+      nextOrigin = null
+    }
+
+    if (initialOrigin && nextOrigin === initialOrigin) {
+      // Same-origin navigation (e.g. Vite full-reload, internal SPA route
+      // change that bypasses the router). Allow.
+      return
+    }
+
+    event.preventDefault()
+    log.warn('Blocked renderer navigation', { from: initialUrl, to: url })
+  })
+}
+
 function createWindow(): void {
-  // Create the browser window.
   const mainWindow = new BrowserWindow({
     width: 420,
     height: 700,
@@ -155,14 +244,39 @@ function createWindow(): void {
     ...(process.platform === 'linux' ? { icon } : {}),
     webPreferences: {
       preload: join(__dirname, '../preload/index.js'),
-      sandbox: false
+      // Electron security baseline (ADR-0009). Most of these are already the
+      // defaults in Electron 39, but we set them explicitly so a future
+      // upstream regression or a copy-paste mistake jumps out in code review
+      // instead of silently widening the renderer's attack surface.
+      contextIsolation: true,
+      nodeIntegration: false,
+      nodeIntegrationInWorker: false,
+      nodeIntegrationInSubFrames: false,
+      // `sandbox: false` is intentional: our preload uses Node-side modules
+      // routed through `contextBridge`. With `contextIsolation: true` the
+      // renderer JS world cannot reach Node directly — the bridge is the
+      // single audited surface — so disabling the sandbox here only relaxes
+      // the preload's own environment, not the renderer's. See ADR-0009 for
+      // the deferred path to `sandbox: true`.
+      sandbox: false,
+      webSecurity: true,
+      allowRunningInsecureContent: false,
+      experimentalFeatures: false
     }
   })
+
+  attachSecurityHeaders(mainWindow)
 
   mainWindow.on('ready-to-show', () => {
     mainWindow.show()
   })
 
+  // Security property: the renderer cannot create new BrowserWindow instances.
+  // Every `window.open` / target=_blank attempt is denied at the Electron
+  // level and the URL is shelled out to the user's default OS handler, which
+  // applies its own URL-handler policy (browser, mailto: client, etc.).
+  // Combined with the navigation guard below, this means the renderer cannot
+  // pivot to attacker-controlled origins at all.
   mainWindow.webContents.setWindowOpenHandler((details) => {
     shell.openExternal(details.url)
     return { action: 'deny' }
@@ -170,6 +284,13 @@ function createWindow(): void {
 
   // HMR for renderer base on electron-vite cli.
   // Load the remote URL for development or the local html file for production.
+  const initialUrl =
+    is.dev && process.env['ELECTRON_RENDERER_URL']
+      ? process.env['ELECTRON_RENDERER_URL']
+      : `file://${join(__dirname, '../renderer/index.html')}`
+
+  attachNavigationGuard(mainWindow, initialUrl)
+
   if (is.dev && process.env['ELECTRON_RENDERER_URL']) {
     mainWindow.loadURL(process.env['ELECTRON_RENDERER_URL'])
   } else {
@@ -216,15 +337,33 @@ app.whenReady().then(async () => {
   // Both read handlers are thin wrappers around pure helpers in
   // `secure-store.ts` — see that module for the apiKey/apiKeyEncrypted
   // routing rules. Routing logic is unit-tested without booting IPC.
-  ipcMain.handle('settings:getAll', async () => {
+  ipcMain.handle('settings:getAll', async (_event, raw) => {
+    const parsed = parseIpc(SettingsGetAllSchema, raw)
+    if (!parsed.ok) {
+      log.warn('settings:getAll rejected invalid payload', { error: parsed.error })
+      // Void-arg channel — the renderer normally sends nothing. If it sent
+      // garbage, log it but still return the real snapshot so the UI doesn't
+      // appear broken. (No payload means no security risk.)
+    }
     return buildSettingsForRenderer(settingsStore.store as Record<string, unknown>, ss)
   })
 
-  ipcMain.handle('settings:get', async (_event, key: string) => {
-    return readSettingForRenderer(key, ss, settingsKv)
+  ipcMain.handle('settings:get', async (_event, raw) => {
+    const parsed = parseIpc(SettingsGetSchema, raw)
+    if (!parsed.ok) {
+      log.warn('settings:get rejected invalid payload', { error: parsed.error })
+      return ''
+    }
+    return readSettingForRenderer(parsed.value, ss, settingsKv)
   })
 
-  ipcMain.handle('settings:set', async (_event, data: Record<string, unknown>) => {
+  ipcMain.handle('settings:set', async (_event, raw) => {
+    const parsed = parseIpc(SettingsSetSchema, raw)
+    if (!parsed.ok) {
+      log.warn('settings:set rejected invalid payload', { error: parsed.error })
+      return { success: false, error: parsed.error }
+    }
+    const data = parsed.value as Record<string, unknown>
     if ('apiKey' in data) {
       const ak = data.apiKey
       if (typeof ak === 'string') {
@@ -234,6 +373,8 @@ app.whenReady().then(async () => {
       } else {
         // A non-string apiKey from the renderer is almost certainly a bug.
         // Drop it and warn rather than persisting `String(value)` garbage.
+        // (Schema already rejects non-string non-null apiKey, so this is
+        // defence-in-depth in case the schema is loosened later.)
         log.warn('settings:set rejected non-string apiKey', { type: typeof ak })
       }
     }
@@ -248,7 +389,13 @@ app.whenReady().then(async () => {
   })
 
   // ── Engine 操控 ──
-  ipcMain.handle('engine:start', async (_event, config: EngineStartConfig) => {
+  ipcMain.handle('engine:start', async (_event, raw) => {
+    const parsed = parseIpc(EngineStartSchema, raw)
+    if (!parsed.ok) {
+      log.warn('engine:start rejected invalid payload', { error: parsed.error })
+      return { success: false, error: parsed.error }
+    }
+    const config = parsed.value as EngineStartConfig
     if (engine?.isRunning()) return { success: false, error: '引擎已在运行中' }
     try {
       // Phase 2: brain owns the decision pipeline; provider wraps the LLM.
@@ -397,7 +544,12 @@ app.whenReady().then(async () => {
     }
   })
 
-  ipcMain.handle('engine:stop', async () => {
+  ipcMain.handle('engine:stop', async (_event, raw) => {
+    const parsed = parseIpc(EngineStopSchema, raw)
+    if (!parsed.ok) {
+      log.warn('engine:stop rejected invalid payload', { error: parsed.error })
+      return { success: false, error: parsed.error }
+    }
     if (!engine?.isRunning()) return { success: false, error: '引擎未运行' }
     // Stop the watchdog first so a graceful shutdown is not interpreted as
     // a crash to recover from.
@@ -415,7 +567,12 @@ app.whenReady().then(async () => {
     return { success: true }
   })
 
-  ipcMain.handle('engine:status', async () => {
+  ipcMain.handle('engine:status', async (_event, raw) => {
+    const parsed = parseIpc(EngineStatusSchema, raw)
+    if (!parsed.ok) {
+      log.warn('engine:status rejected invalid payload', { error: parsed.error })
+      return { running: false }
+    }
     return { running: engine?.isRunning() ?? false }
   })
 
@@ -425,7 +582,12 @@ app.whenReady().then(async () => {
   // instead of corrupting persisted state. snapshot exposes counters/state
   // for the future settings + diagnostics surfaces.
 
-  ipcMain.handle('policy:get', async (): Promise<AntiDetectionConfig> => {
+  ipcMain.handle('policy:get', async (_event, raw): Promise<AntiDetectionConfig> => {
+    const parsed = parseIpc(PolicyGetSchema, raw)
+    if (!parsed.ok) {
+      log.warn('policy:get rejected invalid payload', { error: parsed.error })
+      return defaultAntiDetectionConfig()
+    }
     if (currentPolicy) return currentPolicy.getConfig()
     const persisted = settingsStore.get('antiDetection') as unknown
     try {
@@ -439,10 +601,19 @@ app.whenReady().then(async () => {
     'policy:set',
     async (
       _event,
-      patch: unknown
+      raw: unknown
     ): Promise<
       { success: true; config: AntiDetectionConfig } | { success: false; error: string }
     > => {
+      // The IPC-layer schema is intentionally permissive (`z.unknown()`); the
+      // real validation happens in `parseAntiDetectionConfig` below, which
+      // both type-checks and applies defaults.
+      const parsed = parseIpc(PolicySetSchema, raw)
+      if (!parsed.ok) {
+        log.warn('policy:set rejected invalid payload', { error: parsed.error })
+        return { success: false, error: parsed.error }
+      }
+      const patch = parsed.value
       try {
         // Merge against the current effective config so callers can send
         // partial patches (e.g. only humanizer fields) without nuking the rest.
@@ -465,12 +636,22 @@ app.whenReady().then(async () => {
     }
   )
 
-  ipcMain.handle('policy:snapshot', async () => {
+  ipcMain.handle('policy:snapshot', async (_event, raw) => {
+    const parsed = parseIpc(PolicySnapshotSchema, raw)
+    if (!parsed.ok) {
+      log.warn('policy:snapshot rejected invalid payload', { error: parsed.error })
+      return null
+    }
     return currentPolicy?.snapshot() ?? null
   })
 
   // Used by the future "user resumes from circuit-break pause" flow. Idempotent.
-  ipcMain.handle('policy:resetBreaker', async () => {
+  ipcMain.handle('policy:resetBreaker', async (_event, raw) => {
+    const parsed = parseIpc(PolicyResetBreakerSchema, raw)
+    if (!parsed.ok) {
+      log.warn('policy:resetBreaker rejected invalid payload', { error: parsed.error })
+      return { success: false, error: parsed.error }
+    }
     currentPolicy?.resetBreaker()
     return { success: true }
   })
@@ -479,47 +660,69 @@ app.whenReady().then(async () => {
   // to reconcile its UI before the next 'engine:state' event arrives. Reads
   // from the shared Lifecycle (not engine.getLifecycle()) so the value
   // persists across Watchdog-driven engine reconstructions.
-  ipcMain.handle('engine:lifecycle', async (): Promise<LifecycleSnapshot | null> => {
+  ipcMain.handle('engine:lifecycle', async (_event, raw): Promise<LifecycleSnapshot | null> => {
+    const parsed = parseIpc(EngineLifecycleSchema, raw)
+    if (!parsed.ok) {
+      log.warn('engine:lifecycle rejected invalid payload', { error: parsed.error })
+      return null
+    }
     return sharedLifecycle?.snapshot() ?? null
   })
 
   // Returns the most recent N log records. Used by the future Diagnostics tab
   // and is already useful for ad-hoc debugging via DevTools.
-  ipcMain.handle('logs:recent', async (_event, limit: number = 200): Promise<LogRecord[]> => {
+  ipcMain.handle('logs:recent', async (_event, raw): Promise<LogRecord[]> => {
+    const parsed = parseIpc(LogsRecentSchema, raw)
+    if (!parsed.ok) {
+      log.warn('logs:recent rejected invalid payload', { error: parsed.error })
+      return []
+    }
+    const limit = parsed.value
     const all = logRingBuffer.getAll()
     return all.slice(-Math.min(Math.max(limit, 1), 2000))
   })
 
-  ipcMain.handle(
-    'engine:updateConfig',
-    async (_event, config: Partial<BrainConfig> & { appType?: AppType }) => {
-      if (currentBrain) {
-        currentBrain.updateConfig(config)
-        if (engine && config.appType) {
-          engine.setAppType(config.appType)
-        }
-        return { success: true }
+  ipcMain.handle('engine:updateConfig', async (_event, raw) => {
+    const parsed = parseIpc(EngineUpdateConfigSchema, raw)
+    if (!parsed.ok) {
+      log.warn('engine:updateConfig rejected invalid payload', { error: parsed.error })
+      return { success: false, error: parsed.error }
+    }
+    const config = parsed.value as Partial<BrainConfig> & { appType?: AppType }
+    if (currentBrain) {
+      currentBrain.updateConfig(config)
+      if (engine && config.appType) {
+        engine.setAppType(config.appType)
       }
-      return { success: false, error: '引擎未初始化' }
+      return { success: true }
     }
-  )
+    return { success: false, error: '引擎未初始化' }
+  })
 
-  ipcMain.handle(
-    'engine:testConnection',
-    async (_event, config: Partial<BrainConfig> & { apiKey: string }) => {
-      // Build a temporary provider so the user can validate credentials
-      // before the engine ever spins up. We don't reuse `currentBrain`
-      // because it may not exist yet (first run / settings page).
-      const provider = new OpenAICompatProvider({
-        apiKey: config.apiKey,
-        ...(config.model !== undefined ? { model: config.model } : {}),
-        ...(config.baseURL !== undefined ? { baseURL: config.baseURL } : {})
-      })
-      return provider.testConnection()
+  ipcMain.handle('engine:testConnection', async (_event, raw) => {
+    const parsed = parseIpc(EngineTestConnectionSchema, raw)
+    if (!parsed.ok) {
+      log.warn('engine:testConnection rejected invalid payload', { error: parsed.error })
+      return { success: false, error: parsed.error }
     }
-  )
+    const config = parsed.value as Partial<BrainConfig> & { apiKey: string }
+    // Build a temporary provider so the user can validate credentials
+    // before the engine ever spins up. We don't reuse `currentBrain`
+    // because it may not exist yet (first run / settings page).
+    const provider = new OpenAICompatProvider({
+      apiKey: config.apiKey,
+      ...(config.model !== undefined ? { model: config.model } : {}),
+      ...(config.baseURL !== undefined ? { baseURL: config.baseURL } : {})
+    })
+    return provider.testConnection()
+  })
 
-  ipcMain.handle('capture-screen', async () => {
+  ipcMain.handle('capture-screen', async (_event, raw) => {
+    const parsed = parseIpc(CaptureScreenSchema, raw)
+    if (!parsed.ok) {
+      log.warn('capture-screen rejected invalid payload', { error: parsed.error })
+      return null
+    }
     try {
       const sources = await desktopCapturer.getSources({
         types: ['screen'],
@@ -536,12 +739,94 @@ app.whenReady().then(async () => {
   })
 
   // ── 测试入口：VLM 并行 vs 串行 ──
-  ipcMain.handle('test:vlm-parallel', async () => {
+  ipcMain.handle('test:vlm-parallel', async (_event, raw) => {
+    const parsed = parseIpc(TestVlmParallelSchema, raw)
+    if (!parsed.ok) {
+      log.warn('test:vlm-parallel rejected invalid payload', { error: parsed.error })
+      return { error: parsed.error }
+    }
     const apiKey = secureStore?.getApiKey() ?? ''
     if (!apiKey) return { error: '请先在设置中填写 API Key' }
     const { runVlmParallelTest } = await import('../core/rpa/tests/test-vlm-parallel')
     return await runVlmParallelTest(apiKey, 'weixin')
   })
+
+  // ── Diagnostics export ───────────────────────────────────────────────────
+  // Bundles lifecycle/policy/settings/runtime snapshots and (optionally)
+  // recent JSONL log files into a single zip under `userData/`. Renderer
+  // uses this for the Settings → Diagnostics → Export action.
+  //
+  // Redaction policy: we strip `apiKey` and `apiKeyEncrypted` from the
+  // settings snapshot before handing it to the zipper, and rely on the
+  // policy/lifecycle snapshots already excluding the API key. A
+  // `_redacted` marker preserves auditability of what was removed.
+  ipcMain.handle(
+    'diag:export',
+    async (
+      _event,
+      raw
+    ): Promise<
+      { success: true; path: string; sizeBytes: number } | { success: false; error: string }
+    > => {
+      const parsed = parseIpc(DiagExportSchema, raw)
+      if (!parsed.ok) {
+        log.warn('diag:export rejected invalid payload', { error: parsed.error })
+        return { success: false, error: parsed.error }
+      }
+      const { includeLogs, daysBack } = parsed.value
+      try {
+        const userData = app.getPath('userData')
+        const outputPath = join(
+          userData,
+          `diagnostics-${new Date().toISOString().replace(/[:.]/g, '-')}.zip`
+        )
+
+        const settingsRaw = settingsStore.store as Record<string, unknown>
+        const settingsRedacted: Record<string, unknown> = { ...settingsRaw }
+        delete settingsRedacted.apiKey
+        delete settingsRedacted.apiKeyEncrypted
+        settingsRedacted._redacted = ['apiKey', 'apiKeyEncrypted']
+
+        const runtimeInfo: Record<string, unknown> = {
+          env: is.dev ? 'dev' : 'prod',
+          platform: process.platform,
+          arch: process.arch,
+          electronVersion: process.versions.electron,
+          nodeVersion: process.versions.node,
+          chromeVersion: process.versions.chrome,
+          version: app.getVersion(),
+          timestamp: new Date().toISOString(),
+          gitSha: process.env.GIT_SHA ?? null
+        }
+
+        const recentLogs = logRingBuffer.getAll().slice(-500)
+
+        const result = await buildDiagnosticsZip({
+          outputPath,
+          logsDir,
+          daysBack,
+          includeLogs,
+          lifecycleSnapshot: sharedLifecycle?.snapshot() ?? null,
+          policySnapshot: currentPolicy?.snapshot() ?? null,
+          settingsRedacted,
+          recentLogs,
+          runtimeInfo
+        })
+
+        log.info('diag:export wrote zip', {
+          path: result.path,
+          sizeBytes: result.sizeBytes,
+          includeLogs,
+          daysBack
+        })
+        return { success: true, path: result.path, sizeBytes: result.sizeBytes }
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err)
+        log.error('diag:export failed', { err })
+        return { success: false, error: message }
+      }
+    }
+  )
 
   createWindow()
 

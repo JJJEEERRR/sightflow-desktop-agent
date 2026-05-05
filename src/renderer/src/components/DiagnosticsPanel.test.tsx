@@ -261,10 +261,122 @@ describe('DiagnosticsPanel — export', () => {
     // bundle) and that the download path fired end-to-end.
     expect(blobArg.size).toBeGreaterThan(0)
     expect(clickSpy).toHaveBeenCalledOnce()
-    expect(onToast).toHaveBeenCalledWith('Diagnostic bundle downloaded', 'success')
+    expect(onToast).toHaveBeenCalledWith(
+      expect.stringMatching(/^Diagnostics exported to: sightflow-diagnostics-\d+\.json$/),
+      'success'
+    )
 
     // Allow the deferred revokeObjectURL to fire.
     await new Promise((r) => setTimeout(r, 5))
     expect(revokeObjectURLSpy).toHaveBeenCalled()
+  })
+})
+
+describe('DiagnosticsPanel — diag:export IPC', () => {
+  /**
+   * Helper that wires `installElectronMock` for a typical happy-path
+   * backfill plus a configurable `diag:export` response (eager or deferred).
+   * Returns the mock so individual tests can assert on invoke args.
+   */
+  function installWithDiagExport(
+    handler: (channel: string, ...args: unknown[]) => unknown
+  ): MockElectron {
+    return installElectronMock((channel, ...args) => {
+      if (channel === 'engine:lifecycle') return null
+      if (channel === 'logs:recent') return []
+      return handler(channel, ...args)
+    })
+  }
+
+  it('renders the diag:export button with the expected label', async () => {
+    installWithDiagExport(() => null)
+    render(<DiagnosticsPanel />)
+
+    // The button uses its visible text content as the accessible name.
+    expect(screen.getByRole('button', { name: 'Export diagnostics' })).toBeInTheDocument()
+  })
+
+  it('routes a successful diag:export response to onToast as success', async () => {
+    const electron = installWithDiagExport((channel, ...args) => {
+      if (channel === 'diag:export') {
+        // Sanity-check the contract payload.
+        expect(args[0]).toEqual({ includeLogs: true, daysBack: 14 })
+        return { success: true, path: '/tmp/sightflow-diag.zip', sizeBytes: 4096 }
+      }
+      return null
+    })
+
+    const onToast = vi.fn()
+    const user = userEvent.setup()
+    render(<DiagnosticsPanel onToast={onToast} />)
+
+    await user.click(screen.getByRole('button', { name: 'Export diagnostics' }))
+
+    await waitFor(() => {
+      expect(electron.invoke).toHaveBeenCalledWith('diag:export', {
+        includeLogs: true,
+        daysBack: 14
+      })
+    })
+    await waitFor(() => {
+      expect(onToast).toHaveBeenCalledWith(
+        'Diagnostics exported to: /tmp/sightflow-diag.zip',
+        'success'
+      )
+    })
+  })
+
+  it('routes a failure diag:export response to onToast as error', async () => {
+    installWithDiagExport((channel) => {
+      if (channel === 'diag:export') return { success: false, error: 'disk full' }
+      return null
+    })
+
+    const onToast = vi.fn()
+    const user = userEvent.setup()
+    render(<DiagnosticsPanel onToast={onToast} />)
+
+    await user.click(screen.getByRole('button', { name: 'Export diagnostics' }))
+
+    await waitFor(() => {
+      expect(onToast).toHaveBeenCalledWith('Export failed: disk full', 'error')
+    })
+  })
+
+  it('disables the export button while a diag:export is in flight', async () => {
+    let resolveExport!: (value: { success: true; path: string; sizeBytes: number }) => void
+    const exportPromise = new Promise<{ success: true; path: string; sizeBytes: number }>(
+      (resolve) => {
+        resolveExport = resolve
+      }
+    )
+    installWithDiagExport((channel) => {
+      if (channel === 'diag:export') return exportPromise
+      return null
+    })
+
+    const onToast = vi.fn()
+    const user = userEvent.setup()
+    render(<DiagnosticsPanel onToast={onToast} />)
+
+    const btn = screen.getByRole('button', { name: 'Export diagnostics' }) as HTMLButtonElement
+    expect(btn).not.toBeDisabled()
+
+    await user.click(btn)
+
+    // While the promise is pending the button should be disabled and show
+    // the in-progress label (which is also its new accessible name).
+    await waitFor(() => {
+      expect(btn).toBeDisabled()
+    })
+    expect(btn).toHaveTextContent('Exporting…')
+
+    resolveExport({ success: true, path: '/tmp/diag.zip', sizeBytes: 1 })
+
+    await waitFor(() => {
+      expect(btn).not.toBeDisabled()
+    })
+    expect(btn).toHaveTextContent('Export diagnostics')
+    expect(onToast).toHaveBeenCalledWith('Diagnostics exported to: /tmp/diag.zip', 'success')
   })
 })

@@ -855,6 +855,17 @@ textarea.form-input {
   font-style: italic;
 }
 
+.diag-export-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.diag-export-btn-ipc svg {
+  width: 14px;
+  height: 14px;
+  flex-shrink: 0;
+}
+
 /* ─── ErrorBoundary ─── */
 .error-boundary {
   padding: 24px;

@@ -9,10 +9,31 @@ files:
   - '!{.eslintcache,eslint.config.mjs,.prettierignore,.prettierrc.yaml,dev-app-update.yml,CHANGELOG.md,README.md}'
   - '!{.env,.env.*,.npmrc,pnpm-lock.yaml}'
   - '!{tsconfig.json,tsconfig.node.json,tsconfig.web.json}'
+# asar: true is the electron-builder default, but we set it explicitly so a
+# future "let's just unpack everything for debugging" diff is visible in code
+# review. Renderer bundle living inside `app.asar` raises the bar for casual
+# tampering (an attacker has to repackage the asar, not edit a JS file in
+# place). See ADR-0009.
+asar: true
+# `resources/**` must be on disk at runtime: the engine reads icons / locale
+# packs / RPA prompts from there with plain `fs` calls, which won't traverse
+# into an asar archive. Anything we deliberately want patchable post-install
+# (templates the user can edit) goes here too.
 asarUnpack:
   - resources/**
 win:
   executableName: SightFlow
+  # ── Code-signing (DISABLED until a CSC_LINK / CSC_KEY_PASSWORD pair is
+  # provisioned). To enable:
+  #   1. Obtain an EV or OV code-signing certificate (.pfx).
+  #   2. Set CSC_LINK (path or base64-encoded blob) and CSC_KEY_PASSWORD in
+  #      the build environment.
+  #   3. Uncomment the block below. electron-builder picks up the env vars
+  #      automatically; `signtoolOptions.sign` is only needed for a custom
+  #      signing script (e.g. cloud HSM signing). See ADR-0009.
+  #
+  # signtoolOptions:
+  #   sign: ./build/sign.js
 nsis:
   artifactName: ${name}-${version}-setup.${ext}
   shortcutName: ${productName}
@@ -20,6 +41,14 @@ nsis:
   createDesktopShortcut: always
 mac:
   entitlementsInherit: build/entitlements.mac.plist
+  # entitlements.mac.plist already requests the JIT / unsigned-memory /
+  # dyld-environment exemptions Electron needs. Hardened Runtime is required
+  # for notarization (Apple gatekeeper); we enable it here so a future
+  # `notarize: true` flip is the only remaining change.
+  hardenedRuntime: true
+  # Notarization requires APPLE_ID, APPLE_APP_SPECIFIC_PASSWORD, and
+  # APPLE_TEAM_ID env vars (or a stored keychain profile). Leave false until
+  # those credentials are provisioned. See ADR-0009.
   notarize: false
 dmg:
   artifactName: ${name}-${version}.${ext}

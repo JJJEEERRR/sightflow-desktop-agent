@@ -96,7 +96,9 @@ export class RPADevice implements DesktopDevice {
         const error =
           unreadResult.status === 'rejected'
             ? unreadResult.reason
-            : (unreadResult.value as any)?.error
+            : unreadResult.value.success === false
+              ? unreadResult.value.error
+              : undefined
         console.error('[RPADevice] 未读区域检测失败:', error)
       }
 
@@ -118,7 +120,9 @@ export class RPADevice implements DesktopDevice {
         const error =
           layoutResult.status === 'rejected'
             ? layoutResult.reason
-            : (layoutResult.value as any)?.error
+            : layoutResult.value.success === false
+              ? layoutResult.value.error
+              : undefined
         console.warn('[RPADevice] 主布局检测失败（非致命）:', error)
       }
 
@@ -135,7 +139,7 @@ export class RPADevice implements DesktopDevice {
 
       console.log('[RPADevice] 布局测量完成 ✓')
       return { success: true }
-    } catch (error: any) {
+    } catch (error) {
       console.error('[RPADevice] 布局测量异常:', error)
       return { success: false, error: String(error) }
     }
@@ -143,8 +147,11 @@ export class RPADevice implements DesktopDevice {
 
   async screenshot(): Promise<string> {
     const result = await takeWeChatScreenshot({ wechatType: this.appType })
-    if (!result.success || !result.screenshot) {
+    if (!result.success) {
       throw new Error(result.error || '截图失败')
+    }
+    if (!result.screenshot) {
+      throw new Error('截图失败')
     }
     return result.screenshot
   }

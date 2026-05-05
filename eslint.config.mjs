@@ -37,11 +37,21 @@ export default defineConfig(
           destructuredArrayIgnorePattern: '^_'
         }
       ],
-      // Tracked technical debt from upstream baseline (~85 occurrences as of
-      // pre-Phase-0). Demoted to warn so CI stays green while we incrementally
-      // tighten types in dedicated cleanup PRs. Do not let new code add to it.
-      '@typescript-eslint/no-explicit-any': 'warn',
-      '@typescript-eslint/explicit-function-return-type': 'warn'
+      // Type-safety guards. We cleared all 85 baseline warnings in
+      // chore/lint-debt-cleanup, so these are now hard errors. New code may
+      // not introduce `any` or omit explicit return types on public surfaces.
+      '@typescript-eslint/no-explicit-any': 'error',
+      '@typescript-eslint/explicit-function-return-type': [
+        'error',
+        {
+          // Inline callbacks and FCs already get inferred return types from
+          // their context (event handlers, JSX). Require explicit returns on
+          // standalone functions / methods only.
+          allowExpressions: true,
+          allowTypedFunctionExpressions: true,
+          allowHigherOrderFunctions: true
+        }
+      ]
     }
   },
   eslintConfigPrettier

@@ -1,6 +1,6 @@
 import { RPADevice } from '../../rpa-device'
 
-export async function runReplyTest() {
+export async function runReplyTest(): Promise<void> {
   console.log('[Test] Running reply atom...')
   const device = new RPADevice()
   device.setAppType('weixin')

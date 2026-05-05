@@ -1,4 +1,4 @@
-# Phase 0 — Autonomous Execution Log
+# Phase 0 �?? Autonomous Execution Log
 
 This file is a chronological journal of every non-trivial decision the AI
 assistant (Cursor + Claude Opus 4.7) made while executing Phase 0 of the
@@ -18,7 +18,7 @@ noted as a follow-up entry pointing back at the original.
 
 ---
 
-## 2026-05-05 — Pre-flight (before Task 1)
+## 2026-05-05 �?? Pre-flight (before Task 1)
 
 These changes happened before Phase 0 Task 1 in order to even get the cloned
 repo into a state where `npm install` and `npm run lint` could complete on the
@@ -34,7 +34,7 @@ upstream baseline was clean; it wasn't.
   Without VC++ Build Tools `node-gyp rebuild` fails with "Could not find any
   Visual Studio installation to use".
 - **Trade-offs**: ~8 GB disk, ~5 minute install. One-time cost on each dev
-  machine — irreversible in the sense that we now depend on it being present.
+  machine �?? irreversible in the sense that we now depend on it being present.
 - **Reversibility**: uninstall via Windows "Apps & features" if not needed.
   Project itself is unchanged by this step.
 
@@ -62,7 +62,7 @@ upstream baseline was clean; it wasn't.
   plus binary excludes for images, fonts, and `*.node`.
 - **Why**: upstream's `.editorconfig` says `end_of_line = lf` and
   `.prettierrc.yaml` defaults to LF, but no `.gitattributes` existed, so Windows
-  clones automatically converted LF→CRLF on checkout (because of git's default
+  clones automatically converted LF�??CRLF on checkout (because of git's default
   `core.autocrlf = true`). After auto-conversion, `eslint --cache .` produced
   ~3800 spurious "Delete `␍`" warnings, drowning real issues.
 - **Trade-offs**: forces line-ending normalization on every file. First commit
@@ -108,11 +108,11 @@ electron: ElectronHandler; osInfo: ... } }`. Moved that block into
   augmentation. `tsconfig.node.json` did not, so node typecheck reported
   `Property 'electron' does not exist on Window`. Three alternatives all had
   drawbacks:
-  1. `/// <reference path>` triple-slash — disallowed by ESLint
+  1. `/// <reference path>` triple-slash �?? disallowed by ESLint
      `@typescript-eslint/triple-slash-reference`.
-  2. Convert `.d.ts` to a non-module ambient (no top-level imports/exports) —
+  2. Convert `.d.ts` to a non-module ambient (no top-level imports/exports) �??
      can't reference `ElectronHandler` cleanly without a top-level `import`.
-  3. Add a load-bearing import of `index.d.ts` somewhere — fragile and
+  3. Add a load-bearing import of `index.d.ts` somewhere �?? fragile and
      non-obvious.
      Putting the augmentation in `index.ts` (which IS a module and IS included in
      every relevant tsconfig) is the most direct fix.
@@ -136,7 +136,7 @@ hookup
   outside of the component during render"). Both are _real_ React violations,
   not lint noise. Fixing them is also a free correctness improvement (no more
   dangling closure references after unmount).
-- **Trade-offs**: change to runtime behavior — between mount and the first
+- **Trade-offs**: change to runtime behavior �?? between mount and the first
   effect tick, `showToast()` calls would no-op (the global is null) where
   previously the component reassigned it during render. In practice no caller
   invokes `showToast` before the Toast component has mounted, so behavior is
@@ -158,7 +158,7 @@ hookup
 
 ---
 
-## 2026-05-05 — Task 1: Lock Node version with `.nvmrc`
+## 2026-05-05 �?? Task 1: Lock Node version with `.nvmrc`
 
 ### T1-1: Pin Node `22` (not `20` as plan suggested as default)
 
@@ -185,13 +185,13 @@ typecheck`.
   new information.
 - **Trade-offs**: if the install were dependent on `.nvmrc` being read by some
   npm step, we could miss a regression here. In practice `.nvmrc` is consumed
-  by `nvm`, `actions/setup-node`, and `volta` — not by `npm ci`. Safe to skip.
+  by `nvm`, `actions/setup-node`, and `volta` �?? not by `npm ci`. Safe to skip.
 - **Reversibility**: rerun `rm -rf node_modules; npm ci; npm run typecheck`
   before merging the PR if any concern.
 
 ---
 
-## 2026-05-05 — Task 2: Vitest with `node` and `jsdom` projects + smoke test
+## 2026-05-05 �?? Task 2: Vitest with `node` and `jsdom` projects + smoke test
 
 ### T2-1: Pin `vitest@^1.6.0` despite latest being `4.1.5`
 
@@ -204,7 +204,7 @@ typecheck`.
   would constitute a deviation from the plan that needs review.
 - **Trade-offs**: vitest 1.x is from 2024-Q1 and may have CVE issues by 2026.
   Mitigated by Dependabot (Task 9) which will surface minor/patch upgrades
-  weekly. Major bumps (1→2 / 2→3 / 3→4) will need a deliberate PR to migrate the
+  weekly. Major bumps (1�??2 / 2�??3 / 3�??4) will need a deliberate PR to migrate the
   config shape.
 - **Reversibility**: a future "deps: upgrade vitest to ^4" PR is straightforward.
 
@@ -215,12 +215,12 @@ typecheck`.
   vitest@4.1.5 in the npx cache (not in `node_modules`) and the test passed
   with exit 0.
 - **Why**: TDD red-light step is symbolic when the runner is downloaded on
-  demand. The intent — "vitest didn't accidentally come pre-installed and the
-  test wasn't a no-op" — is satisfied because the test is actually exercising
+  demand. The intent �?? "vitest didn't accidentally come pre-installed and the
+  test wasn't a no-op" �?? is satisfied because the test is actually exercising
   `process` and arithmetic.
 - **Trade-offs**: minor deviation from the plan's literal letter; no impact on
   the resulting code or tests.
-- **Reversibility**: N/A — no code change to revert.
+- **Reversibility**: N/A �?? no code change to revert.
 
 ### T2-3: Only add `coverage` to `.gitignore`, not `.env`/`.env.local`
 
@@ -233,9 +233,9 @@ typecheck`.
 
 ---
 
-## 2026-05-05 — Task 4: Husky pre-commit + lint-staged
+## 2026-05-05 �?? Task 4: Husky pre-commit + lint-staged
 
-### T4-1: Hook test bumped into "empty commit prevented" — treated as success
+### T4-1: Hook test bumped into "empty commit prevented" �?? treated as success
 
 - **What**: plan §Task 4 Step 5 wants me to verify the hook by appending a blank
   line to `README.md` and committing. lint-staged ran prettier (correctly), but
@@ -247,7 +247,7 @@ typecheck`.
 - **Trade-offs**: deviates from the plan's literal letter (the plan expected the
   commit to succeed). The plan was assuming a non-prettier-affected change,
   which a single blank line is not for an `.md` file with `printWidth: 100`.
-- **Reversibility**: N/A — no project state was changed by the test.
+- **Reversibility**: N/A �?? no project state was changed by the test.
 
 ### T4-2: Husky 9 hook installation differs from Husky 8
 
@@ -255,14 +255,14 @@ typecheck`.
   husky internal loader), not `.husky/pre-commit`. We add `pre-commit` ourselves
   as a plain text file with no shebang.
 - **Why**: this is the documented Husky 9 model (https://typicode.github.io/husky/)
-  — fewer moving parts than Husky 8.
+  �?? fewer moving parts than Husky 8.
 - **Trade-offs**: contributors familiar with Husky 8 may expect the hook to be
   pre-created. Mitigated by Task 11's CONTRIBUTING.md.
-- **Reversibility**: N/A — Husky 9 is the current released line.
+- **Reversibility**: N/A �?? Husky 9 is the current released line.
 
 ---
 
-## 2026-05-05 — Task 5: Commitlint commit-msg hook
+## 2026-05-05 �?? Task 5: Commitlint commit-msg hook
 
 ### T5-1: Use `commitlint.config.mjs` (not `.js`) to avoid Node 22 ESM warning
 
@@ -285,8 +285,8 @@ conventional commit message"`. lint-staged from Task 4 always runs first via
   pre-commit, sees only a whitespace change, prettier-normalizes it, and
   aborts as an empty commit (same as T4-1) before commit-msg ever fires.
 - **Why**: tested commitlint directly:
-  - `echo "bad" | npx commitlint` → exit 1, "subject may not be empty"
-  - `echo "chore: ..." | npx commitlint` → exit 0
+  - `echo "bad" | npx commitlint` �?? exit 1, "subject may not be empty"
+  - `echo "chore: ..." | npx commitlint` �?? exit 0
   - This proves the rules are loaded and enforced. The full git+husky end-to-end
     path was already proven by Task 4's pre-commit run.
 - **Trade-offs**: no end-to-end smoke from `git commit` itself for commit-msg.
@@ -296,7 +296,7 @@ conventional commit message"`. lint-staged from Task 4 always runs first via
 
 ---
 
-## 2026-05-05 — Tasks 6-9: CI workflows + Dependabot (PAT scope blocker)
+## 2026-05-05 �?? Tasks 6-9: CI workflows + Dependabot (PAT scope blocker)
 
 ### T6-9-1: Local commits made, push BLOCKED by missing `workflow` scope on PAT
 
@@ -403,3 +403,89 @@ commit --trailer "Co-authored-by: Cursor <cursoragent@cursor.com>" -m "this shou
   Tracked via "supersedes" mechanism in ADR-0003.
 - **Reversibility**: delete the `actions/setup-python@v5` block from both
   workflows.
+
+---
+
+## 2026-05-05 09:35 UTC+8 ? Lint debt cleanup (Phase 0.5, branch `chore/lint-debt-cleanup`)
+
+**User instruction:** "?????????????????" (Next, fix all
+technical debt to lay a solid foundation).
+
+**Goal:** Clear all 85 baseline lint warnings (51 � `no-explicit-any` + 34 �
+`explicit-function-return-type`) and re-tighten the eslint rules from `warn`
+back to `error`, so we enter Phase 1 with strict type safety as a hard gate.
+
+### Strategy
+
+Worked file-by-file from leaf utilities inward, running `npm run typecheck`
+after each batch to catch regressions early:
+
+1. `src/core/rpa/util.ts` ? defined a minimal `Robot` interface for the
+   subset of `@hurdlegroup/robotjs` we actually use (the fork has no shipped
+   typings; upstream `@types/robotjs` doesn't apply).
+2. `src/core/rpa/{has-unread,vision-utils,screenshot-utils,input-utils}.ts`
+   ? replaced `catch (error: any)` idiom with `catch (error)` +
+   `error instanceof Error ? error.message : String(error)`. Introduced
+   discriminated unions `CaptureResult` / `TakeScreenshotResult` and updated
+   call sites to use proper narrowing.
+3. `src/core/rpa/window-utils.ts` (15 warnings, biggest file) ? defined
+   `ActiveWindowInfo`, `NodeWindow`, `NodeWindowManager`, `PlatformWindow`,
+   `WindowBounds`, `ValidatedBounds`, `WechatWindowInfoResult`,
+   `FullWindowInfo`. Removed the entire `[key: string]: any` fallback.
+4. `src/preload/index.ts` ? promoted IPC bridge to a generic
+   `ElectronHandler` interface with `invoke<T = unknown>()` so renderer
+   callers can specify their expected return type. This doubles as live
+   documentation of the IPC contract.
+5. `src/renderer/src/App.tsx` (14 warnings) ? added explicit return types to
+   all React components and SVG icons. Defined `AppSettings`, `OkResult`,
+   `ErrResult`, `IpcResult`, `EngineLogPayload`. Replaced `as any` casts on
+   `t()` and `appType` setter with proper `TranslationKey` and `AppKind`.
+6. `src/core/ai-client.ts` ? defined `ChatMessage`, `ChatMessageContent`,
+   `ChatCompletionResponse`. Typed `callAPI` and `extractText` properly.
+7. `src/core/{rpa-device,local-hooks,engine}.ts` ? return types and
+   `catch (e)` cleanup. Added public `Engine.setAppType()` to remove the
+   `(engine as any).device` access in `main/index.ts`.
+8. `src/main/index.ts` ? typed IPC payloads (`EngineStartConfig`,
+   `Partial<AIClientConfig> & { appType?: AppType }`). Replaced
+   `(Store as any).default` with a proper unknown-cast helper.
+9. `src/core/rpa/tests/test-*.ts` ? return types + standardised
+   `catch (e: any)` ? `catch (e)` + `instanceof Error` narrowing.
+10. `eslint.config.mjs` ? `no-explicit-any` and `explicit-function-return-type`
+    set back to `error`. Latter uses `allowExpressions /
+allowTypedFunctionExpressions / allowHigherOrderFunctions` so inline
+    callbacks and JSX handlers stay ergonomic.
+
+### Outcomes
+
+- Lint: **0 errors, 0 warnings** (down from 85 warnings).
+- Typecheck: green on both `tsconfig.node.json` and `tsconfig.web.json`.
+- Tests: 2/2 vitest smoke tests pass.
+- **Latent bug found while typing**: `'settings.baseURL.hint'` was
+  referenced in `App.tsx` but never defined in `i18n.ts`; the UI was
+  rendering the literal key. Added missing zh + en translations.
+- **Public API improvements** (not just type cosmetics):
+  - `ElectronHandler.invoke` is now generic ? `invoke<EngineStartResult>(...)`.
+  - `Engine.setAppType()` is the new public path for the IPC layer to
+    push config to the running engine.
+  - `CaptureResult` and `IpcResult` are exported discriminated unions; new
+    code can `import` them rather than re-declaring the same shape.
+
+### Decisions logged separately
+
+- **ADR-0004**: tighten TypeScript strictness ? bans `any`, requires
+  explicit return types on standalone functions/methods. See
+  `docs/adr/0004-tighten-typescript-strictness-no-any.md`.
+
+### Reversibility
+
+If a future batch of code becomes infeasible to type strictly (e.g. wrapping
+a wildly-typed third-party SDK), demote the affected rule back to `warn` for
+that file via an ESLint override block rather than codebase-wide. Do not
+re-introduce blanket `any` ? define the missing types in a `types.d.ts`.
+
+### Next
+
+After this PR merges, Phase 1 (Stability & 24/7 Operation) starts on a fresh
+branch. Phase 1 scope per the foundation design spec: anti-detect input
+patterns, supervisor for engine recovery, structured logging
+(pino + JSON files), config schema (zod), and event bus for log streaming.

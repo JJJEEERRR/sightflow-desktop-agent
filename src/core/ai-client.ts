@@ -13,6 +13,29 @@ export interface AIClientConfig {
   systemPrompt: string
 }
 
+/**
+ * OpenAI-compatible chat-completions message shape. The Volcengine Ark
+ * API accepts the same multimodal content array used by OpenAI's vision
+ * models, so the renderer-/main-side code only needs this minimal subset.
+ */
+export type ChatMessageContent =
+  | string
+  | Array<{ type: 'text'; text: string } | { type: 'image_url'; image_url: { url: string } }>
+
+export interface ChatMessage {
+  role: 'system' | 'user' | 'assistant'
+  content: ChatMessageContent
+}
+
+interface ChatCompletionResponse {
+  choices?: Array<{
+    message?: {
+      role?: string
+      content?: string
+    }
+  }>
+}
+
 const DEFAULT_MODEL = 'doubao-seed-2-0-lite-260215'
 const DEFAULT_BASE_URL = 'https://ark.cn-beijing.volces.com/api/v3'
 
@@ -61,9 +84,10 @@ export class AIClient {
       }
 
       return replyText.trim()
-    } catch (error: any) {
+    } catch (error) {
       const elapsed = ((Date.now() - startTime) / 1000).toFixed(1)
-      console.error(`[AIClient] 聊天回复失败 (${elapsed}s):`, error?.message || error)
+      const message = error instanceof Error ? error.message : String(error)
+      console.error(`[AIClient] 聊天回复失败 (${elapsed}s):`, message)
       throw error
     }
   }
@@ -95,8 +119,8 @@ export class AIClient {
     try {
       await this.callText('你好，请回复"连接成功"。')
       return { success: true }
-    } catch (error: any) {
-      return { success: false, error: error?.message || String(error) }
+    } catch (error) {
+      return { success: false, error: error instanceof Error ? error.message : String(error) }
     }
   }
 
@@ -140,7 +164,7 @@ export class AIClient {
    * thinking 字段是火山方舟对标 OpenAI Responses API 的扩展参数，
    * 在非火山供应商上会被忽略，放在这里不影响兼容性
    */
-  private async callAPI(messages: any[]): Promise<any> {
+  private async callAPI(messages: ChatMessage[]): Promise<ChatCompletionResponse> {
     const url = `${this.config.baseURL}/chat/completions`
     const TIMEOUT_MS = 30_000 // 30 秒超时
     const callStart = Date.now()
@@ -180,17 +204,18 @@ export class AIClient {
         throw new Error(`API request failed: ${response.status} - ${errorText.slice(0, 200)}`)
       }
 
-      const json = await response.json()
+      const json = (await response.json()) as ChatCompletionResponse
       const totalElapsed = ((Date.now() - callStart) / 1000).toFixed(1)
       console.log(`[AIClient] 解析完成 (${totalElapsed}s)`)
       return json
-    } catch (error: any) {
+    } catch (error) {
       const elapsed = ((Date.now() - callStart) / 1000).toFixed(1)
-      if (error?.name === 'AbortError') {
+      if (error instanceof Error && error.name === 'AbortError') {
         console.error(`[AIClient] ⏱ 超时！已等待 ${elapsed}s，上限 ${TIMEOUT_MS / 1000}s`)
         throw new Error(`AI API 请求超时 (${TIMEOUT_MS / 1000}s)`)
       }
-      console.error(`[AIClient] 请求异常 (${elapsed}s):`, error?.message)
+      const message = error instanceof Error ? error.message : String(error)
+      console.error(`[AIClient] 请求异常 (${elapsed}s):`, message)
       throw error
     } finally {
       clearTimeout(timer)
@@ -201,7 +226,7 @@ export class AIClient {
    * 从 OpenAI 兼容 /chat/completions 返回值中提取文本
    * 格式: { choices: [{ message: { role, content: string } }] }
    */
-  private extractText(responseData: any): string {
+  private extractText(responseData: ChatCompletionResponse): string {
     const content = responseData?.choices?.[0]?.message?.content
     if (typeof content === 'string' && content.length > 0) {
       return content

@@ -1,5 +1,5 @@
-import { useState, useCallback, useRef, useEffect } from 'react'
-import { t } from './i18n'
+import { useState, useCallback, useRef, useEffect, JSX } from 'react'
+import { t, type TranslationKey } from './i18n'
 import logoUrl from './assets/logo.png'
 import './index.css'
 
@@ -12,21 +12,47 @@ interface LogEntry {
 
 type EngineStatus = 'idle' | 'running' | 'error'
 type View = 'control' | 'settings'
+type AppKind = 'weixin' | 'wework'
+
+interface AppSettings {
+  apiKey?: string
+  model?: string
+  baseURL?: string
+  systemPrompt?: string
+  appType?: AppKind
+}
+
+interface OkResult<T = unknown> {
+  success: true
+  data?: T
+}
+
+interface ErrResult {
+  success: false
+  error?: string
+}
+
+type IpcResult<T = unknown> = OkResult<T> | ErrResult
+
+interface EngineLogPayload {
+  type: string
+  content: string
+}
 
 // ─── SVG Icons ───
-const PlayIcon = () => (
+const PlayIcon = (): JSX.Element => (
   <svg viewBox="0 0 24 24" fill="currentColor">
     <path d="M8 5.14v14l11-7-11-7z" />
   </svg>
 )
 
-const StopIcon = () => (
+const StopIcon = (): JSX.Element => (
   <svg viewBox="0 0 24 24" fill="currentColor">
     <rect x="6" y="6" width="12" height="12" rx="2" />
   </svg>
 )
 
-const GearIcon = () => (
+const GearIcon = (): JSX.Element => (
   <svg
     viewBox="0 0 24 24"
     fill="none"
@@ -40,7 +66,7 @@ const GearIcon = () => (
   </svg>
 )
 
-const BackIcon = () => (
+const BackIcon = (): JSX.Element => (
   <svg
     viewBox="0 0 24 24"
     fill="none"
@@ -54,7 +80,7 @@ const BackIcon = () => (
 )
 
 // ─── App ───
-function App() {
+function App(): JSX.Element {
   const [view, setView] = useState<View>('control')
   const [status, setStatus] = useState<EngineStatus>('idle')
 
@@ -97,7 +123,7 @@ function ControlPanel({
 }: {
   status: EngineStatus
   setStatus: (s: EngineStatus) => void
-}) {
+}): JSX.Element {
   const [logs, setLogs] = useState<LogEntry[]>([])
   const logRef = useRef<HTMLDivElement>(null)
 
@@ -113,7 +139,9 @@ function ControlPanel({
   }, [logs])
 
   useEffect(() => {
-    const cleanup = window.electron?.on('engine:log', (data: { type: string; content: string }) => {
+    const cleanup = window.electron?.on('engine:log', (...args) => {
+      const data = args[0] as EngineLogPayload | undefined
+      if (!data) return
       addLog(data.type as LogEntry['type'], data.content)
 
       if (data.type === 'error' && data.content.includes('引擎无法启动')) {
@@ -147,7 +175,7 @@ function ControlPanel({
               <div className="log-entry" key={i}>
                 <span className="log-time">{entry.time}</span>
                 <span className={`log-type ${entry.type}`}>
-                  {t(`control.log.${entry.type}` as any)}
+                  {t(`control.log.${entry.type}` as TranslationKey)}
                 </span>
                 <span>{entry.content}</span>
               </div>
@@ -168,9 +196,9 @@ function BottomBar({
   status: EngineStatus
   setStatus: (s: EngineStatus) => void
   onSettings: () => void
-}) {
+}): JSX.Element {
   const handleStart = useCallback(async () => {
-    const settings = await window.electron?.invoke('settings:getAll')
+    const settings = await window.electron?.invoke<AppSettings | undefined>('settings:getAll')
     const apiKey = settings?.apiKey || ''
     if (!apiKey) {
       showToast(t('control.start.nokey'), 'error')
@@ -185,7 +213,7 @@ function BottomBar({
       appType: settings?.appType || 'weixin'
     }
 
-    const result = await window.electron?.invoke('engine:start', config)
+    const result = await window.electron?.invoke<IpcResult>('engine:start', config)
     if (result?.success) {
       setStatus('running')
       showToast(t('toast.engineStarted'), 'success')
@@ -208,12 +236,10 @@ function BottomBar({
       {running ? (
         <button className="bottom-btn bottom-btn-stop" onClick={handleStop}>
           <StopIcon />
-          {t('control.stop')}
         </button>
       ) : (
-        <button className="bottom-btn bottom-btn-play" onClick={handleStart}>
+        <button className="bottom-btn bottom-btn-start" onClick={handleStart}>
           <PlayIcon />
-          {t('control.start')}
         </button>
       )}
       <button className="bottom-btn bottom-btn-settings" onClick={onSettings}>
@@ -224,17 +250,17 @@ function BottomBar({
 }
 
 // ─── Settings Panel ───
-function SettingsPanel() {
+function SettingsPanel(): JSX.Element {
   const [apiKey, setApiKey] = useState('')
   const [model, setModel] = useState('doubao-seed-2-0-lite-260215')
   const [baseURL, setBaseURL] = useState('')
   const [systemPrompt, setSystemPrompt] = useState('')
-  const [appType, setAppType] = useState<'weixin' | 'wework'>('weixin')
+  const [appType, setAppType] = useState<AppKind>('weixin')
   const [testing, setTesting] = useState(false)
   const [, setLoaded] = useState(false)
 
   useEffect(() => {
-    window.electron?.invoke('settings:getAll').then((settings: any) => {
+    window.electron?.invoke<AppSettings | undefined>('settings:getAll').then((settings) => {
       if (settings) {
         setApiKey(settings.apiKey || '')
         setModel('doubao-seed-2-0-lite-260215')
@@ -270,7 +296,7 @@ function SettingsPanel() {
     if (!apiKey) return
     setTesting(true)
     try {
-      const result = await window.electron?.invoke('engine:testConnection', {
+      const result = await window.electron?.invoke<IpcResult>('engine:testConnection', {
         apiKey,
         model: model || undefined,
         baseURL: baseURL || undefined
@@ -280,8 +306,9 @@ function SettingsPanel() {
       } else {
         showToast(`${t('settings.testConnection.fail')}: ${result?.error || ''}`, 'error')
       }
-    } catch (e: any) {
-      showToast(`${t('settings.testConnection.fail')}: ${e.message}`, 'error')
+    } catch (e) {
+      const message = e instanceof Error ? e.message : String(e)
+      showToast(`${t('settings.testConnection.fail')}: ${message}`, 'error')
     } finally {
       setTesting(false)
     }
@@ -297,7 +324,7 @@ function SettingsPanel() {
           <select
             className="form-input"
             value={appType}
-            onChange={(e) => setAppType(e.target.value as any)}
+            onChange={(e) => setAppType(e.target.value as AppKind)}
           >
             <option value="weixin">微信</option>
             <option value="wework">企业微信</option>
@@ -318,6 +345,17 @@ function SettingsPanel() {
         </div>
 
         <div className="form-group">
+          <label className="form-label">{t('settings.baseURL')}</label>
+          <input
+            className="form-input"
+            value={baseURL}
+            onChange={(e) => setBaseURL(e.target.value)}
+            placeholder={t('settings.baseURL.placeholder')}
+          />
+          <div className="form-hint">{t('settings.baseURL.hint')}</div>
+        </div>
+
+        <div className="form-group">
           <label className="form-label">{t('settings.model')}</label>
           <input
             className="form-input"
@@ -328,30 +366,21 @@ function SettingsPanel() {
         </div>
 
         <div className="form-group">
-          <label className="form-label">{t('settings.baseURL')}</label>
-          <input
-            className="form-input"
-            value={baseURL}
-            onChange={(e) => setBaseURL(e.target.value)}
-            placeholder={t('settings.baseURL.placeholder')}
-          />
-        </div>
-
-        <div className="form-group">
           <label className="form-label">{t('settings.systemPrompt')}</label>
           <textarea
-            className="form-input"
+            className="form-input form-textarea"
             value={systemPrompt}
             onChange={(e) => setSystemPrompt(e.target.value)}
             placeholder={t('settings.systemPrompt.placeholder')}
-            rows={4}
+            rows={6}
           />
         </div>
 
-        <div style={{ display: 'flex', gap: 8 }}>
+        <div className="form-actions">
           <button
             className="btn btn-secondary"
             onClick={handleTestConnection}
+            style={{ flex: 1 }}
             disabled={!apiKey || testing}
           >
             {testing ? t('settings.testConnection.testing') : t('settings.testConnection')}
@@ -368,11 +397,11 @@ function SettingsPanel() {
 // ─── Toast ───
 let _showToast: ((msg: string, type: 'success' | 'error') => void) | null = null
 
-function showToast(msg: string, type: 'success' | 'error') {
+function showToast(msg: string, type: 'success' | 'error'): void {
   _showToast?.(msg, type)
 }
 
-function Toast() {
+function Toast(): JSX.Element {
   const [visible, setVisible] = useState(false)
   const [message, setMessage] = useState('')
   const [type, setType] = useState<'success' | 'error'>('success')

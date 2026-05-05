@@ -37,6 +37,7 @@ const translations = {
     'settings.model.placeholder': 'doubao-seed-1-6-251015',
     'settings.baseURL': 'Base URL',
     'settings.baseURL.placeholder': 'https://ark.cn-beijing.volces.com/api/v3',
+    'settings.baseURL.hint': '默认即可，如需自定义代理可修改',
     'settings.systemPrompt': 'System Prompt',
     'settings.systemPrompt.placeholder':
       '你是一个微信自动回复助手。根据截图中的聊天内容，生成合适的回复...',
@@ -84,6 +85,7 @@ const translations = {
     'settings.model.placeholder': 'doubao-seed-1-6-251015',
     'settings.baseURL': 'Base URL',
     'settings.baseURL.placeholder': 'https://ark.cn-beijing.volces.com/api/v3',
+    'settings.baseURL.hint': 'Defaults are fine; override if you use a proxy',
     'settings.systemPrompt': 'System Prompt',
     'settings.systemPrompt.placeholder': 'You are a WeChat auto-reply assistant...',
     'settings.testConnection': 'Test Connection',
@@ -102,11 +104,11 @@ const translations = {
   }
 } as const
 
-type TranslationKey = keyof (typeof translations)['zh']
+export type TranslationKey = keyof (typeof translations)['zh']
 
 let currentLocale: Locale = 'zh'
 
-export function setLocale(locale: Locale) {
+export function setLocale(locale: Locale): void {
   currentLocale = locale
 }
 

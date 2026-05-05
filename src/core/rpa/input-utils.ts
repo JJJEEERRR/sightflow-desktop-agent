@@ -108,7 +108,15 @@ export async function humanLikeClick(button: 'left' | 'right' = 'left'): Promise
   }
 }
 
-const getWeChatInputPosition = (bounds: any, scaleFactor: number) => {
+interface InputPosition {
+  inputX: number
+  inputY: number
+}
+
+const getWeChatInputPosition = (
+  bounds: { x: number; y: number; width: number; height: number },
+  scaleFactor: number
+): InputPosition => {
   if (IS_WINDOWS) {
     const baseInputX = Math.round((bounds.x + bounds.width - 150) * scaleFactor)
     const baseInputY = Math.round((bounds.y + bounds.height - 40) * scaleFactor)
@@ -198,7 +206,7 @@ export async function sendReplyAction(appType: AppType, text: string): Promise<b
     }
 
     return true
-  } catch (err: any) {
+  } catch (err) {
     console.error('[sendReplyAction] Failed:', err)
     return false
   }

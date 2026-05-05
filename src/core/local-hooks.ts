@@ -67,7 +67,7 @@ export class LocalHooks implements AgentHooks {
 
       // 返回回复文字
       yield { type: 'text', content: reply }
-    } catch (error: any) {
+    } catch (error) {
       console.error('[LocalHooks] AI 回复失败:', error)
       yield { type: 'skip' }
     }
@@ -86,8 +86,12 @@ export class LocalHooks implements AgentHooks {
         // 对每个 action，直接 yield 成功
         // Engine 负责调用 device 执行实际操作
         yield { action, success: true }
-      } catch (error: any) {
-        yield { action, success: false, error: error?.message || String(error) }
+      } catch (error) {
+        yield {
+          action,
+          success: false,
+          error: error instanceof Error ? error.message : String(error)
+        }
       }
     }
   }

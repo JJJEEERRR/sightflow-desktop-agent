@@ -140,14 +140,17 @@ describe('Engine controls', () => {
     const user = userEvent.setup()
     render(<App />)
 
-    const playBtn = document.querySelector('.bottom-btn-start') as HTMLButtonElement
+    // Phase 5 PR4 replaced the legacy `.bottom-btn-start` / `.toast.show`
+    // CSS hooks with `data-testid` attributes — the start/stop button is
+    // now stably addressable as `control-start`, and toast nodes are
+    // discoverable via `data-testid="toast"`.
+    const playBtn = screen.getByTestId('control-start') as HTMLButtonElement
     expect(playBtn).toBeTruthy()
     await user.click(playBtn)
 
-    // The toast renders inside an element with class `toast`
     await waitFor(() => {
-      const toast = document.querySelector('.toast.show')
-      expect(toast?.textContent).toMatch(/请先.*API Key/)
+      const toast = screen.queryByTestId('toast')
+      expect(toast?.textContent ?? '').toMatch(/请先.*API Key/)
     })
   })
 
@@ -167,7 +170,7 @@ describe('Engine controls', () => {
       expect(useSettingsStore.getState().draft.apiKey).toBe('k')
     })
 
-    const playBtn = document.querySelector('.bottom-btn-start') as HTMLButtonElement
+    const playBtn = screen.getByTestId('control-start') as HTMLButtonElement
     await user.click(playBtn)
 
     await waitFor(() => {
@@ -194,15 +197,15 @@ describe('Engine controls', () => {
       expect(useSettingsStore.getState().draft.apiKey).toBe('k')
     })
 
-    const playBtn = document.querySelector('.bottom-btn-start') as HTMLButtonElement
+    const playBtn = screen.getByTestId('control-start') as HTMLButtonElement
     await user.click(playBtn)
 
     await waitFor(() => {
       expect(screen.getAllByText('异常').length).toBeGreaterThanOrEqual(1)
     })
     await waitFor(() => {
-      const toast = document.querySelector('.toast.show')
-      expect(toast?.textContent).toContain('未找到微信窗口')
+      const toast = screen.queryByTestId('toast')
+      expect(toast?.textContent ?? '').toContain('未找到微信窗口')
     })
   })
 })

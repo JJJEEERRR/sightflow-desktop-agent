@@ -67,25 +67,41 @@ export class ErrorBoundary extends Component<Props, State> {
     // boundary reaches into the imperative i18next instance directly. The
     // boundary's render path is a hard error case (renderer crash) — it
     // doesn't need to react to live language changes.
+    // Phase 5 PR4: ErrorBoundary uses raw Tailwind utilities (not the
+    // shadcn `<Button>` / `<Card>` primitives) because it must keep
+    // working even if the React subtree producing those primitives is
+    // exactly what crashed. A plain <div> + <button> can't fail to render.
     return (
-      <div className="error-boundary" role="alert">
-        <h2 className="error-boundary-title">{i18n.t('diag.errorBoundary.title')}</h2>
-        <p className="error-boundary-hint">{i18n.t('diag.errorBoundary.hint')}</p>
-        <pre className="error-boundary-pre">
+      <div
+        role="alert"
+        className="m-4 flex h-[calc(100vh-32px)] flex-col gap-3 overflow-auto rounded-md border border-border bg-card/80 p-6 text-foreground backdrop-blur-md"
+      >
+        <h2 className="text-base font-semibold text-destructive">
+          {i18n.t('diag.errorBoundary.title')}
+        </h2>
+        <p className="text-xs leading-relaxed text-muted-foreground">
+          {i18n.t('diag.errorBoundary.hint')}
+        </p>
+        <pre className="max-h-[50vh] overflow-auto whitespace-pre-wrap break-words rounded-md border border-border bg-black/25 p-3 font-mono text-[11px] text-foreground">
           {error.name}: {error.message}
           {error.stack ? `\n\n${error.stack}` : ''}
           {errorInfo ? `\n\nComponent stack:${errorInfo}` : ''}
         </pre>
-        <div className="error-boundary-actions">
+        <div className="flex gap-2">
           <button
-            className="btn btn-secondary"
+            type="button"
+            className="inline-flex h-9 items-center justify-center gap-2 rounded-md border border-border bg-secondary px-4 text-sm font-medium text-secondary-foreground transition-colors hover:bg-secondary/80 hover:text-foreground"
             onClick={(): void => {
               void this.handleCopy()
             }}
           >
             {i18n.t('diag.errorBoundary.copy')}
           </button>
-          <button className="btn btn-primary" onClick={this.handleReload}>
+          <button
+            type="button"
+            className="inline-flex h-9 items-center justify-center gap-2 rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground transition-colors hover:bg-primary/90"
+            onClick={this.handleReload}
+          >
             {i18n.t('diag.errorBoundary.reload')}
           </button>
         </div>

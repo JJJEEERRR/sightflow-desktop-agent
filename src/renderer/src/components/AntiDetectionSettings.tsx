@@ -2,6 +2,12 @@ import { useCallback, useMemo, useState, JSX } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useTranslation } from 'react-i18next'
 import { ipc } from '../lib/ipc'
+import { cn } from '../lib/utils'
+import { Button } from './ui/button'
+import { Card, CardContent, CardHeader, CardTitle } from './ui/card'
+import { Input } from './ui/input'
+import { Label } from './ui/label'
+import { Textarea } from './ui/textarea'
 
 // UI mirror of src/core/policy/config.ts. Source of truth lives in core;
 // renderer cannot import zod-laden modules.
@@ -77,17 +83,10 @@ const POLICY_GET_KEY = ['policy:get'] as const
 const POLICY_SNAPSHOT_KEY = ['policy:snapshot'] as const
 
 interface AntiDetectionSettingsProps {
-  /** Forwarded to the global toast helper. */
   onToast?: (msg: string, type: 'success' | 'error') => void
-  /** Optional navigation callback wired from App for the breaker banner's
-   *  "view diagnostics" affordance. */
   onNavigateDiagnostics?: () => void
 }
 
-// Hard-coded preset partials. Applied as a shallow merge over the relevant
-// config blocks so the user can iterate from a known starting point without
-// losing unrelated edits. "Balanced" snaps back to whatever the server
-// returned on first load (which is, by definition, the schema defaults).
 const CONSERVATIVE_PRESET = {
   rateLimiter: {
     globalPerHour: 15,
@@ -115,22 +114,14 @@ const AGGRESSIVE_PRESET = {
 } as const
 
 /**
- * Anti-detection (policy) settings. Phase 5 PR2 fully migrated this
- * component to react-query:
- *  - `policy:get` → `useQuery` with a long `staleTime` (config rarely
- *    changes during a session).
- *  - `policy:snapshot` → `useQuery` with a 2-second `refetchInterval`
- *    so the breaker / hourly counters update without manual timers.
- *  - `policy:set` → `useMutation`. On success, invalidates both
- *    `policy:get` and `policy:snapshot` so the next read pulls the
- *    server-canonicalized config (and the snapshot picks up new caps).
- *  - `policy:resetBreaker` → `useMutation`, invalidates the snapshot.
+ * Anti-detection (policy) settings. Phase 5 PR2 fully migrated to
+ * react-query; PR4 swaps the hand-written `.btn`/`.form-input`/`.card`
+ * classes for shadcn primitives + Tailwind utilities.
  *
- * The local *editable* config (the `config` state below) is intentionally
- * NOT the same object as the server config. Form edits flow into local
- * state; only Save persists. On a fresh server load (initial fetch or
- * post-save reconcile) the local copy is overwritten via
- * `applyServerConfig`.
+ * The native `<input type="checkbox">` is preserved (rather than swapped
+ * for shadcn's `<Switch>`) because the existing test suite asserts on
+ * `.checked` of a checkbox element by `data-testid`. PR4 leaves the
+ * accessible API intact and only restyles via Tailwind.
  */
 export function AntiDetectionSettings({
   onToast,
@@ -143,10 +134,6 @@ export function AntiDetectionSettings({
   const [windowsJsonError, setWindowsJsonError] = useState<string | null>(null)
   const [bannedKeywordsText, setBannedKeywordsText] = useState<string>('')
 
-  // Sync the canonical server config into the local editable form state.
-  // The "balanced" preset and "reload" action both read directly from
-  // `serverConfig` (the react-query cache) — no separate "initial" ref
-  // needed, because the cache itself IS the canonical snapshot.
   const applyServerConfig = useCallback((cfg: AntiDetectionConfig): void => {
     setConfig(cfg)
     setWindowsJson(JSON.stringify(cfg.schedule.windows ?? {}, null, 2))
@@ -154,25 +141,14 @@ export function AntiDetectionSettings({
     setBannedKeywordsText((cfg.circuitBreaker.bannedKeywords ?? []).join('\n'))
   }, [])
 
-  // ── policy:get (read-once with long stale) ─────────────────────────────
   const { data: serverConfig } = useQuery<AntiDetectionConfig | null>({
     queryKey: POLICY_GET_KEY,
     queryFn: async () => (await ipc.invoke<AntiDetectionConfig | null>('policy:get')) ?? null,
-    // Long stale + no auto-refetch so unsaved form edits aren't blown
-    // away by a focus-driven refetch. Save / Reload explicitly invalidate
-    // when the user wants the canonical server config.
     staleTime: Infinity,
     refetchOnWindowFocus: false,
     refetchOnReconnect: false
   })
 
-  // Sync server config → local editable form state. We use the
-  // render-phase "store last seen prop" pattern (React docs: §"Adjusting
-  // some state when a prop changes") rather than a `useEffect`, both
-  // because it avoids the `react-hooks/set-state-in-effect` lint and
-  // because it's the recommended way to derive form state from a piece
-  // of slowly-changing data: it skips the extra render cycle the effect
-  // path would introduce.
   const [lastSyncedServerConfig, setLastSyncedServerConfig] = useState<
     AntiDetectionConfig | null | undefined
   >(undefined)
@@ -181,7 +157,6 @@ export function AntiDetectionSettings({
     if (serverConfig) applyServerConfig(serverConfig)
   }
 
-  // ── policy:snapshot (live counters, 2s polling) ───────────────────────
   const { data: snapshot = null } = useQuery<PolicySnapshot | null>({
     queryKey: POLICY_SNAPSHOT_KEY,
     queryFn: async () => (await ipc.invoke<PolicySnapshot | null>('policy:snapshot')) ?? null,
@@ -189,16 +164,11 @@ export function AntiDetectionSettings({
     staleTime: 1_000
   })
 
-  // ── Mutations ─────────────────────────────────────────────────────────
   const savePolicy = useMutation<SetResult | undefined, Error, AntiDetectionConfig>({
     mutationFn: (payload) => ipc.invoke<SetResult>('policy:set', payload),
     onSuccess: (result) => {
       if (result?.success) {
         applyServerConfig(result.config)
-        // The server-canonical config is already in `result.config`; we
-        // also invalidate so any future read (including snapshot's
-        // embedded `.config`) re-pulls. Fire-and-forget; react-query
-        // handles the racing.
         queryClient.invalidateQueries({ queryKey: POLICY_GET_KEY })
         queryClient.invalidateQueries({ queryKey: POLICY_SNAPSHOT_KEY })
         onToast?.(t('policy.saved'), 'success')
@@ -221,9 +191,6 @@ export function AntiDetectionSettings({
     }
   })
 
-  // Cross-field validation. Save is blocked while any range is inverted or
-  // the windows JSON is unparseable; the inline errors point the user at the
-  // offending field.
   const rangeInvalid = useMemo(() => {
     if (!config) return false
     const ranges: Array<[number, number]> = [
@@ -240,7 +207,6 @@ export function AntiDetectionSettings({
 
   const canSave = !!config && !rangeInvalid && !windowsJsonError && !savePolicy.isPending
 
-  // ── Field updaters ───────────────────────────────────────────────────────
   const updateHumanizer = useCallback(
     <K extends keyof HumanizerConfig>(key: K, value: HumanizerConfig[K]): void => {
       setConfig((prev) =>
@@ -275,7 +241,6 @@ export function AntiDetectionSettings({
     setConfig((prev) => (prev ? { ...prev, ocr: { ...prev.ocr, [key]: value } } : prev))
   }, [])
 
-  // ── Presets ──────────────────────────────────────────────────────────────
   const applyPresetConservative = useCallback((): void => {
     setConfig((prev) => {
       if (!prev) return prev
@@ -300,7 +265,6 @@ export function AntiDetectionSettings({
     })
   }, [])
 
-  // ── Windows JSON / banned keywords textarea wiring ───────────────────────
   const handleWindowsJsonChange = useCallback(
     (next: string): void => {
       setWindowsJson(next)
@@ -331,15 +295,12 @@ export function AntiDetectionSettings({
     [updateBreaker]
   )
 
-  // ── Save / reload / breaker reset ────────────────────────────────────────
   const handleSave = useCallback((): void => {
     if (!config || !canSave) return
     savePolicy.mutate(config)
   }, [config, canSave, savePolicy])
 
   const handleReload = useCallback((): void => {
-    // Force a refetch of policy:get; the useEffect above will reapply it
-    // into local state once the new data lands.
     void queryClient.invalidateQueries({ queryKey: POLICY_GET_KEY })
   }, [queryClient])
 
@@ -348,7 +309,7 @@ export function AntiDetectionSettings({
   }, [resetBreaker])
 
   if (!config) {
-    return <div className="slide-up" data-testid="policy-loading" />
+    return <div className="animate-slide-up" data-testid="policy-loading" />
   }
 
   const breakerTripped = snapshot?.circuitBreaker.state.tripped === true
@@ -356,302 +317,331 @@ export function AntiDetectionSettings({
     snapshot?.circuitBreaker.state.tripped === true ? snapshot.circuitBreaker.state.reason : ''
 
   return (
-    <div className="slide-up">
+    <div className="animate-slide-up space-y-3">
       {breakerTripped ? (
-        <div className="card policy-breaker-banner" data-testid="policy-breaker-banner">
-          <div className="card-title policy-breaker-title">{t('policy.tripped')}</div>
-          <div className="policy-breaker-reason">{breakerReason}</div>
-          <div className="form-actions">
-            <button
-              className="btn btn-danger"
-              onClick={handleResetBreaker}
-              disabled={resetBreaker.isPending}
-              data-testid="policy-reset-breaker"
-            >
-              {t('policy.resetBreaker')}
-            </button>
-            {onNavigateDiagnostics ? (
-              <button className="btn btn-secondary" onClick={onNavigateDiagnostics}>
-                {t('diag.title')}
-              </button>
-            ) : null}
-          </div>
-        </div>
+        <Card
+          data-testid="policy-breaker-banner"
+          className="border-destructive/25 bg-destructive/[0.08]"
+        >
+          <CardHeader>
+            <CardTitle className="text-destructive">{t('policy.tripped')}</CardTitle>
+          </CardHeader>
+          <CardContent>
+            <div className="mb-3 font-mono text-xs text-foreground">{breakerReason}</div>
+            <div className="flex gap-2">
+              <Button
+                variant="destructive"
+                onClick={handleResetBreaker}
+                disabled={resetBreaker.isPending}
+                data-testid="policy-reset-breaker"
+              >
+                {t('policy.resetBreaker')}
+              </Button>
+              {onNavigateDiagnostics ? (
+                <Button variant="secondary" onClick={onNavigateDiagnostics}>
+                  {t('diag.title')}
+                </Button>
+              ) : null}
+            </div>
+          </CardContent>
+        </Card>
       ) : null}
 
-      <div className="card">
-        <div className="card-title">{t('policy.preset.label')}</div>
-        <div className="form-actions">
-          <button
-            className="btn btn-secondary"
-            onClick={applyPresetConservative}
-            data-testid="policy-preset-conservative"
-          >
-            {t('policy.preset.conservative')}
-          </button>
-          <button className="btn btn-secondary" onClick={applyPresetBalanced}>
-            {t('policy.preset.balanced')}
-          </button>
-          <button className="btn btn-secondary" onClick={applyPresetAggressive}>
-            {t('policy.preset.aggressive')}
-          </button>
-        </div>
-      </div>
+      <Card>
+        <CardHeader>
+          <CardTitle>{t('policy.preset.label')}</CardTitle>
+        </CardHeader>
+        <CardContent>
+          <div className="flex gap-2">
+            <Button
+              variant="secondary"
+              onClick={applyPresetConservative}
+              data-testid="policy-preset-conservative"
+            >
+              {t('policy.preset.conservative')}
+            </Button>
+            <Button variant="secondary" onClick={applyPresetBalanced}>
+              {t('policy.preset.balanced')}
+            </Button>
+            <Button variant="secondary" onClick={applyPresetAggressive}>
+              {t('policy.preset.aggressive')}
+            </Button>
+          </div>
+        </CardContent>
+      </Card>
 
-      <div className="card">
-        <div className="card-title">{t('policy.section.humanizer')}</div>
-        <CheckboxRow
-          checked={config.humanizer.enabled}
-          onChange={(v): void => updateHumanizer('enabled', v)}
-          testId="hum-enabled"
-        />
-        <RangeField
-          label={t('policy.field.preActionDelayMs')}
-          value={config.humanizer.preActionDelayMs}
-          onChange={(v): void => updateHumanizer('preActionDelayMs', v)}
-          step={1}
-          testIdPrefix="hum-pre"
-        />
-        <RangeField
-          label={t('policy.field.postActionDelayMs')}
-          value={config.humanizer.postActionDelayMs}
-          onChange={(v): void => updateHumanizer('postActionDelayMs', v)}
-          step={1}
-          testIdPrefix="hum-post"
-        />
-        <NumberField
-          label={t('policy.field.clickJitterPx')}
-          value={config.humanizer.clickJitterPx}
-          onChange={(v): void => updateHumanizer('clickJitterPx', v)}
-          step={1}
-          testId="hum-click-jitter"
-        />
-        <RangeField
-          label={t('policy.field.charsPerSecond')}
-          value={config.humanizer.charsPerSecond}
-          onChange={(v): void => updateHumanizer('charsPerSecond', v)}
-          step={0.1}
-          testIdPrefix="hum-cps"
-        />
-        <RangeField
-          label={t('policy.field.punctuationPauseMs')}
-          value={config.humanizer.punctuationPauseMs}
-          onChange={(v): void => updateHumanizer('punctuationPauseMs', v)}
-          step={1}
-          testIdPrefix="hum-punc"
-        />
-        <NumberField
-          label={t('policy.field.typoProbability')}
-          value={config.humanizer.typoProbability}
-          onChange={(v): void => updateHumanizer('typoProbability', v)}
-          step={0.01}
-          testId="hum-typo"
-        />
-        <NumberField
-          label={t('policy.field.longPauseProbability')}
-          value={config.humanizer.longPauseProbability}
-          onChange={(v): void => updateHumanizer('longPauseProbability', v)}
-          step={0.01}
-          testId="hum-long-prob"
-        />
-        <RangeField
-          label={t('policy.field.longPauseMs')}
-          value={config.humanizer.longPauseMs}
-          onChange={(v): void => updateHumanizer('longPauseMs', v)}
-          step={1}
-          testIdPrefix="hum-long"
-        />
-        <RangeField
-          label={t('policy.field.readDelayMs')}
-          value={config.humanizer.readDelayMs}
-          onChange={(v): void => updateHumanizer('readDelayMs', v)}
-          step={1}
-          testIdPrefix="hum-read"
-        />
-      </div>
-
-      <div className="card">
-        <div className="card-title">{t('policy.section.rateLimiter')}</div>
-        <CheckboxRow
-          checked={config.rateLimiter.enabled}
-          onChange={(v): void => updateRateLimiter('enabled', v)}
-          testId="rl-enabled"
-        />
-        <NumberField
-          label={t('policy.field.globalPerHour')}
-          value={config.rateLimiter.globalPerHour}
-          onChange={(v): void => updateRateLimiter('globalPerHour', v)}
-          step={1}
-          testId="rl-global"
-        />
-        <NumberField
-          label={t('policy.field.perContactPerDay')}
-          value={config.rateLimiter.perContactPerDay}
-          onChange={(v): void => updateRateLimiter('perContactPerDay', v)}
-          step={1}
-          testId="rl-per-contact"
-        />
-        <NumberField
-          label={t('policy.field.minIntervalMs')}
-          value={config.rateLimiter.minIntervalMs}
-          onChange={(v): void => updateRateLimiter('minIntervalMs', v)}
-          step={1}
-          testId="rl-min-interval"
-        />
-        <NumberField
-          label={t('policy.field.newContactCooldownMs')}
-          value={config.rateLimiter.newContactCooldownMs}
-          onChange={(v): void => updateRateLimiter('newContactCooldownMs', v)}
-          step={1}
-          testId="rl-cooldown"
-        />
-      </div>
-
-      <div className="card">
-        <div className="card-title">{t('policy.section.schedule')}</div>
-        <CheckboxRow
-          checked={config.schedule.enabled}
-          onChange={(v): void => updateSchedule('enabled', v)}
-          testId="sched-enabled"
-        />
-        <NumberField
-          label={t('policy.field.afkProbability')}
-          value={config.schedule.afkProbability}
-          onChange={(v): void => updateSchedule('afkProbability', v)}
-          step={0.01}
-          testId="sched-afk-prob"
-        />
-        <RangeField
-          label={t('policy.field.afkDurationMs')}
-          value={config.schedule.afkDurationMs}
-          onChange={(v): void => updateSchedule('afkDurationMs', v)}
-          step={1}
-          testIdPrefix="sched-afk-dur"
-        />
-        <div className="form-group">
-          <label className="form-label">{t('policy.field.windows')}</label>
-          <textarea
-            className="form-input form-textarea"
-            rows={6}
-            value={windowsJson}
-            onChange={(e): void => handleWindowsJsonChange(e.target.value)}
-            data-testid="sched-windows-json"
+      <Card>
+        <CardHeader>
+          <CardTitle>{t('policy.section.humanizer')}</CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-3.5">
+          <CheckboxRow
+            checked={config.humanizer.enabled}
+            onChange={(v): void => updateHumanizer('enabled', v)}
+            testId="hum-enabled"
           />
-          {windowsJsonError ? (
-            <div className="form-hint policy-error">{windowsJsonError}</div>
-          ) : null}
-        </div>
-      </div>
-
-      <div className="card">
-        <div className="card-title">{t('policy.section.breaker')}</div>
-        <CheckboxRow
-          checked={config.circuitBreaker.enabled}
-          onChange={(v): void => updateBreaker('enabled', v)}
-          testId="cb-enabled"
-        />
-        <NumberField
-          label={t('policy.field.consecutiveAiFailures')}
-          value={config.circuitBreaker.consecutiveAiFailures}
-          onChange={(v): void => updateBreaker('consecutiveAiFailures', v)}
-          step={1}
-          testId="cb-ai-failures"
-        />
-        <NumberField
-          label={t('policy.field.consecutiveRpaFailures')}
-          value={config.circuitBreaker.consecutiveRpaFailures}
-          onChange={(v): void => updateBreaker('consecutiveRpaFailures', v)}
-          step={1}
-          testId="cb-rpa-failures"
-        />
-        <NumberField
-          label={t('policy.field.duplicateReplyCount')}
-          value={config.circuitBreaker.duplicateReplyCount}
-          onChange={(v): void => updateBreaker('duplicateReplyCount', v)}
-          step={1}
-          testId="cb-dup"
-        />
-        <NumberField
-          label={t('policy.field.screenshotFreezeMs')}
-          value={config.circuitBreaker.screenshotFreezeMs}
-          onChange={(v): void => updateBreaker('screenshotFreezeMs', v)}
-          step={1}
-          testId="cb-freeze"
-        />
-        <div className="form-group">
-          <label className="form-label">{t('policy.field.bannedKeywords')}</label>
-          <textarea
-            className="form-input form-textarea"
-            rows={4}
-            value={bannedKeywordsText}
-            onChange={(e): void => handleBannedKeywordsChange(e.target.value)}
-            data-testid="cb-banned-keywords"
+          <RangeField
+            label={t('policy.field.preActionDelayMs')}
+            value={config.humanizer.preActionDelayMs}
+            onChange={(v): void => updateHumanizer('preActionDelayMs', v)}
+            step={1}
+            testIdPrefix="hum-pre"
           />
-        </div>
-      </div>
+          <RangeField
+            label={t('policy.field.postActionDelayMs')}
+            value={config.humanizer.postActionDelayMs}
+            onChange={(v): void => updateHumanizer('postActionDelayMs', v)}
+            step={1}
+            testIdPrefix="hum-post"
+          />
+          <NumberField
+            label={t('policy.field.clickJitterPx')}
+            value={config.humanizer.clickJitterPx}
+            onChange={(v): void => updateHumanizer('clickJitterPx', v)}
+            step={1}
+            testId="hum-click-jitter"
+          />
+          <RangeField
+            label={t('policy.field.charsPerSecond')}
+            value={config.humanizer.charsPerSecond}
+            onChange={(v): void => updateHumanizer('charsPerSecond', v)}
+            step={0.1}
+            testIdPrefix="hum-cps"
+          />
+          <RangeField
+            label={t('policy.field.punctuationPauseMs')}
+            value={config.humanizer.punctuationPauseMs}
+            onChange={(v): void => updateHumanizer('punctuationPauseMs', v)}
+            step={1}
+            testIdPrefix="hum-punc"
+          />
+          <NumberField
+            label={t('policy.field.typoProbability')}
+            value={config.humanizer.typoProbability}
+            onChange={(v): void => updateHumanizer('typoProbability', v)}
+            step={0.01}
+            testId="hum-typo"
+          />
+          <NumberField
+            label={t('policy.field.longPauseProbability')}
+            value={config.humanizer.longPauseProbability}
+            onChange={(v): void => updateHumanizer('longPauseProbability', v)}
+            step={0.01}
+            testId="hum-long-prob"
+          />
+          <RangeField
+            label={t('policy.field.longPauseMs')}
+            value={config.humanizer.longPauseMs}
+            onChange={(v): void => updateHumanizer('longPauseMs', v)}
+            step={1}
+            testIdPrefix="hum-long"
+          />
+          <RangeField
+            label={t('policy.field.readDelayMs')}
+            value={config.humanizer.readDelayMs}
+            onChange={(v): void => updateHumanizer('readDelayMs', v)}
+            step={1}
+            testIdPrefix="hum-read"
+          />
+        </CardContent>
+      </Card>
 
-      <div className="card">
-        <div className="card-title">{t('policy.ocr.title')}</div>
-        <div className="form-group policy-checkbox-row">
-          <label className="policy-checkbox-label">
-            <input
-              type="checkbox"
-              checked={config.ocr.enabled}
-              onChange={(e): void => updateOcr('enabled', e.target.checked)}
-              data-testid="ocr-enabled"
+      <Card>
+        <CardHeader>
+          <CardTitle>{t('policy.section.rateLimiter')}</CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-3.5">
+          <CheckboxRow
+            checked={config.rateLimiter.enabled}
+            onChange={(v): void => updateRateLimiter('enabled', v)}
+            testId="rl-enabled"
+          />
+          <NumberField
+            label={t('policy.field.globalPerHour')}
+            value={config.rateLimiter.globalPerHour}
+            onChange={(v): void => updateRateLimiter('globalPerHour', v)}
+            step={1}
+            testId="rl-global"
+          />
+          <NumberField
+            label={t('policy.field.perContactPerDay')}
+            value={config.rateLimiter.perContactPerDay}
+            onChange={(v): void => updateRateLimiter('perContactPerDay', v)}
+            step={1}
+            testId="rl-per-contact"
+          />
+          <NumberField
+            label={t('policy.field.minIntervalMs')}
+            value={config.rateLimiter.minIntervalMs}
+            onChange={(v): void => updateRateLimiter('minIntervalMs', v)}
+            step={1}
+            testId="rl-min-interval"
+          />
+          <NumberField
+            label={t('policy.field.newContactCooldownMs')}
+            value={config.rateLimiter.newContactCooldownMs}
+            onChange={(v): void => updateRateLimiter('newContactCooldownMs', v)}
+            step={1}
+            testId="rl-cooldown"
+          />
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle>{t('policy.section.schedule')}</CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-3.5">
+          <CheckboxRow
+            checked={config.schedule.enabled}
+            onChange={(v): void => updateSchedule('enabled', v)}
+            testId="sched-enabled"
+          />
+          <NumberField
+            label={t('policy.field.afkProbability')}
+            value={config.schedule.afkProbability}
+            onChange={(v): void => updateSchedule('afkProbability', v)}
+            step={0.01}
+            testId="sched-afk-prob"
+          />
+          <RangeField
+            label={t('policy.field.afkDurationMs')}
+            value={config.schedule.afkDurationMs}
+            onChange={(v): void => updateSchedule('afkDurationMs', v)}
+            step={1}
+            testIdPrefix="sched-afk-dur"
+          />
+          <div className="space-y-1.5">
+            <Label>{t('policy.field.windows')}</Label>
+            <Textarea
+              rows={6}
+              value={windowsJson}
+              onChange={(e): void => handleWindowsJsonChange(e.target.value)}
+              data-testid="sched-windows-json"
+              className="font-mono"
             />
-            <span>{t('policy.ocr.enabled')}</span>
-          </label>
-        </div>
-        <div className="form-group">
-          <label className="form-label">
-            {t('policy.ocr.sampleIntervalMs')}: {Math.round(config.ocr.sampleIntervalMs / 1000)}s
-          </label>
-          <input
-            className="form-input"
-            type="range"
-            min={5_000}
-            max={120_000}
-            step={1_000}
-            value={config.ocr.sampleIntervalMs}
-            onChange={(e): void => {
-              const n = Number(e.target.value)
-              if (!Number.isNaN(n)) updateOcr('sampleIntervalMs', n)
-            }}
-            data-testid="ocr-sample-interval"
-          />
-        </div>
-        <div className="form-group">
-          <label className="form-label">{t('policy.ocr.language')}</label>
-          <input
-            className="form-input"
-            type="text"
-            value={config.ocr.language}
-            onChange={(e): void => updateOcr('language', e.target.value)}
-            data-testid="ocr-language"
-          />
-        </div>
-        <div className="form-hint">{t('policy.ocr.hint')}</div>
-      </div>
+            {windowsJsonError ? (
+              <div className="text-[10px] text-destructive">{windowsJsonError}</div>
+            ) : null}
+          </div>
+        </CardContent>
+      </Card>
 
-      <div className="form-actions">
-        <button
-          className="btn btn-secondary"
+      <Card>
+        <CardHeader>
+          <CardTitle>{t('policy.section.breaker')}</CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-3.5">
+          <CheckboxRow
+            checked={config.circuitBreaker.enabled}
+            onChange={(v): void => updateBreaker('enabled', v)}
+            testId="cb-enabled"
+          />
+          <NumberField
+            label={t('policy.field.consecutiveAiFailures')}
+            value={config.circuitBreaker.consecutiveAiFailures}
+            onChange={(v): void => updateBreaker('consecutiveAiFailures', v)}
+            step={1}
+            testId="cb-ai-failures"
+          />
+          <NumberField
+            label={t('policy.field.consecutiveRpaFailures')}
+            value={config.circuitBreaker.consecutiveRpaFailures}
+            onChange={(v): void => updateBreaker('consecutiveRpaFailures', v)}
+            step={1}
+            testId="cb-rpa-failures"
+          />
+          <NumberField
+            label={t('policy.field.duplicateReplyCount')}
+            value={config.circuitBreaker.duplicateReplyCount}
+            onChange={(v): void => updateBreaker('duplicateReplyCount', v)}
+            step={1}
+            testId="cb-dup"
+          />
+          <NumberField
+            label={t('policy.field.screenshotFreezeMs')}
+            value={config.circuitBreaker.screenshotFreezeMs}
+            onChange={(v): void => updateBreaker('screenshotFreezeMs', v)}
+            step={1}
+            testId="cb-freeze"
+          />
+          <div className="space-y-1.5">
+            <Label>{t('policy.field.bannedKeywords')}</Label>
+            <Textarea
+              rows={4}
+              value={bannedKeywordsText}
+              onChange={(e): void => handleBannedKeywordsChange(e.target.value)}
+              data-testid="cb-banned-keywords"
+            />
+          </div>
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle>{t('policy.ocr.title')}</CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-3.5">
+          <div className="flex items-center">
+            <label className="inline-flex cursor-pointer select-none items-center gap-2 text-xs text-muted-foreground">
+              <input
+                type="checkbox"
+                checked={config.ocr.enabled}
+                onChange={(e): void => updateOcr('enabled', e.target.checked)}
+                data-testid="ocr-enabled"
+                className="h-3.5 w-3.5 cursor-pointer accent-primary"
+              />
+              <span>{t('policy.ocr.enabled')}</span>
+            </label>
+          </div>
+          <div className="space-y-1.5">
+            <Label>
+              {t('policy.ocr.sampleIntervalMs')}: {Math.round(config.ocr.sampleIntervalMs / 1000)}s
+            </Label>
+            <input
+              type="range"
+              min={5_000}
+              max={120_000}
+              step={1_000}
+              value={config.ocr.sampleIntervalMs}
+              onChange={(e): void => {
+                const n = Number(e.target.value)
+                if (!Number.isNaN(n)) updateOcr('sampleIntervalMs', n)
+              }}
+              data-testid="ocr-sample-interval"
+              className="w-full accent-primary"
+            />
+          </div>
+          <div className="space-y-1.5">
+            <Label>{t('policy.ocr.language')}</Label>
+            <Input
+              type="text"
+              value={config.ocr.language}
+              onChange={(e): void => updateOcr('language', e.target.value)}
+              data-testid="ocr-language"
+            />
+          </div>
+          <div className="text-[10px] text-muted-foreground/80">{t('policy.ocr.hint')}</div>
+        </CardContent>
+      </Card>
+
+      <div className="flex gap-2">
+        <Button
+          variant="secondary"
+          className="flex-1"
           onClick={handleReload}
-          style={{ flex: 1 }}
           data-testid="policy-reload"
         >
           {t('policy.reloadDefaults')}
-        </button>
-        <button
-          className="btn btn-primary"
+        </Button>
+        <Button
+          className="flex-1"
           onClick={handleSave}
-          style={{ flex: 1 }}
           disabled={!canSave}
           data-testid="policy-save"
         >
           {t('policy.save')}
-        </button>
+        </Button>
       </div>
     </div>
   )
@@ -670,13 +660,14 @@ function CheckboxRow({
 }): JSX.Element {
   const { t } = useTranslation()
   return (
-    <div className="form-group policy-checkbox-row">
-      <label className="policy-checkbox-label">
+    <div className="flex items-center">
+      <label className="inline-flex cursor-pointer select-none items-center gap-2 text-xs text-muted-foreground">
         <input
           type="checkbox"
           checked={checked}
           onChange={(e): void => onChange(e.target.checked)}
           data-testid={testId}
+          className="h-3.5 w-3.5 cursor-pointer accent-primary"
         />
         <span>{t('policy.field.enabled')}</span>
       </label>
@@ -698,10 +689,9 @@ function NumberField({
   testId: string
 }): JSX.Element {
   return (
-    <div className="form-group">
-      <label className="form-label">{label}</label>
-      <input
-        className="form-input"
+    <div className="space-y-1.5">
+      <Label>{label}</Label>
+      <Input
         type="number"
         step={step}
         value={value}
@@ -731,11 +721,10 @@ function RangeField({
   const { t } = useTranslation()
   const invalid = value[0] > value[1]
   return (
-    <div className="form-group">
-      <label className="form-label">{label}</label>
-      <div className="policy-range-row">
-        <input
-          className="form-input policy-range-input"
+    <div className="space-y-1.5">
+      <Label>{label}</Label>
+      <div className="flex items-center gap-2">
+        <Input
           type="number"
           step={step}
           value={value[0]}
@@ -744,10 +733,12 @@ function RangeField({
             if (!Number.isNaN(n)) onChange([n, value[1]])
           }}
           data-testid={`${testIdPrefix}-min`}
+          className={cn('min-w-0 flex-1')}
         />
-        <span className="policy-range-sep">{t('policy.range.to')}</span>
-        <input
-          className="form-input policy-range-input"
+        <span className="shrink-0 text-[11px] text-muted-foreground/80">
+          {t('policy.range.to')}
+        </span>
+        <Input
           type="number"
           step={step}
           value={value[1]}
@@ -756,10 +747,11 @@ function RangeField({
             if (!Number.isNaN(n)) onChange([value[0], n])
           }}
           data-testid={`${testIdPrefix}-max`}
+          className="min-w-0 flex-1"
         />
       </div>
       {invalid ? (
-        <div className="form-hint policy-error" data-testid={`${testIdPrefix}-error`}>
+        <div className="text-[10px] text-destructive" data-testid={`${testIdPrefix}-error`}>
           {t('policy.invalidRange')}
         </div>
       ) : null}

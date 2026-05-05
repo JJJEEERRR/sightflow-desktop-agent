@@ -5,6 +5,11 @@ import { useNavigate } from 'react-router-dom'
 import { ipc } from '../lib/ipc'
 import { useSettingsStore } from '../stores/settings'
 import { useToastStore } from '../stores/toast'
+import { Button } from '../components/ui/button'
+import { Card, CardContent, CardHeader, CardTitle } from '../components/ui/card'
+import { Input } from '../components/ui/input'
+import { Label } from '../components/ui/label'
+import { Textarea } from '../components/ui/textarea'
 import type { AppKind } from '../types'
 
 interface OkResult<T = unknown> {
@@ -57,6 +62,9 @@ interface TestConnectionPayload {
  *  - `engine:testConnection` → `useMutation`. The button is disabled
  *    while `isPending` and toggles its label between "Test connection"
  *    and "Testing…".
+ *
+ * Phase 5 PR4: replaced `.btn`/`.form-input`/`.card` classes with
+ * shadcn primitives (`Button`, `Input`, `Textarea`, `Label`, `Card`).
  */
 export function SettingsPage(): JSX.Element {
   const { t } = useTranslation()
@@ -131,92 +139,92 @@ export function SettingsPage(): JSX.Element {
   }, [draft.apiKey, draft.model, draft.baseURL, testConnection])
 
   return (
-    <div className="slide-up">
-      <div className="card">
-        <div className="card-title">{t('settings.ai')}</div>
+    <div className="animate-slide-up space-y-3">
+      <Card>
+        <CardHeader>
+          <CardTitle>{t('settings.ai')}</CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-3.5">
+          <div className="space-y-1.5">
+            <Label htmlFor="settings-apiKey">{t('settings.apiKey')}</Label>
+            <Input
+              id="settings-apiKey"
+              type="password"
+              value={draft.apiKey ?? ''}
+              onChange={(e): void => patchDraft({ apiKey: e.target.value })}
+              placeholder={t('settings.apiKey.placeholder')}
+              autoComplete="off"
+            />
+            <div className="text-[10px] text-muted-foreground/80">{t('settings.apiKey.hint')}</div>
+          </div>
 
-        <div className="form-group">
-          <label className="form-label">{t('settings.apiKey')}</label>
-          <input
-            className="form-input"
-            type="password"
-            value={draft.apiKey ?? ''}
-            onChange={(e): void => patchDraft({ apiKey: e.target.value })}
-            placeholder={t('settings.apiKey.placeholder')}
-            autoComplete="off"
-          />
-          <div className="form-hint">{t('settings.apiKey.hint')}</div>
-        </div>
+          <div className="space-y-1.5">
+            <Label htmlFor="settings-baseURL">{t('settings.baseURL')}</Label>
+            <Input
+              id="settings-baseURL"
+              value={draft.baseURL ?? ''}
+              onChange={(e): void => patchDraft({ baseURL: e.target.value })}
+              placeholder={t('settings.baseURL.placeholder')}
+            />
+            <div className="text-[10px] text-muted-foreground/80">{t('settings.baseURL.hint')}</div>
+          </div>
 
-        <div className="form-group">
-          <label className="form-label">{t('settings.baseURL')}</label>
-          <input
-            className="form-input"
-            value={draft.baseURL ?? ''}
-            onChange={(e): void => patchDraft({ baseURL: e.target.value })}
-            placeholder={t('settings.baseURL.placeholder')}
-          />
-          <div className="form-hint">{t('settings.baseURL.hint')}</div>
-        </div>
+          <div className="space-y-1.5">
+            <Label htmlFor="settings-model">{t('settings.model')}</Label>
+            <Input
+              id="settings-model"
+              value={draft.model ?? 'doubao-seed-2-0-lite-260215'}
+              disabled
+              placeholder={t('settings.model.placeholder')}
+            />
+          </div>
 
-        <div className="form-group">
-          <label className="form-label">{t('settings.model')}</label>
-          <input
-            className="form-input"
-            value={draft.model ?? 'doubao-seed-2-0-lite-260215'}
-            disabled
-            placeholder={t('settings.model.placeholder')}
-          />
-        </div>
+          <div className="space-y-1.5">
+            <Label htmlFor="settings-systemPrompt">{t('settings.systemPrompt')}</Label>
+            <Textarea
+              id="settings-systemPrompt"
+              value={draft.systemPrompt ?? ''}
+              onChange={(e): void => patchDraft({ systemPrompt: e.target.value })}
+              placeholder={t('settings.systemPrompt.placeholder')}
+              rows={6}
+            />
+          </div>
 
-        <div className="form-group">
-          <label className="form-label">{t('settings.systemPrompt')}</label>
-          <textarea
-            className="form-input form-textarea"
-            value={draft.systemPrompt ?? ''}
-            onChange={(e): void => patchDraft({ systemPrompt: e.target.value })}
-            placeholder={t('settings.systemPrompt.placeholder')}
-            rows={6}
-          />
-        </div>
+          <div className="flex gap-2">
+            <Button
+              variant="secondary"
+              className="flex-1"
+              onClick={handleTestConnection}
+              disabled={!draft.apiKey || testConnection.isPending}
+            >
+              {testConnection.isPending
+                ? t('settings.testConnection.testing')
+                : t('settings.testConnection')}
+            </Button>
+            <Button className="flex-1" onClick={handleSave} disabled={saveSettings.isPending}>
+              {t('settings.save')}
+            </Button>
+          </div>
+        </CardContent>
+      </Card>
 
-        <div className="form-actions">
-          <button
-            className="btn btn-secondary"
-            onClick={handleTestConnection}
-            style={{ flex: 1 }}
-            disabled={!draft.apiKey || testConnection.isPending}
-          >
-            {testConnection.isPending
-              ? t('settings.testConnection.testing')
-              : t('settings.testConnection')}
-          </button>
-          <button
-            className="btn btn-primary"
-            onClick={handleSave}
-            style={{ flex: 1 }}
-            disabled={saveSettings.isPending}
-          >
-            {t('settings.save')}
-          </button>
-        </div>
-      </div>
-
-      <div className="card">
-        <div className="card-title">{t('policy.title')}</div>
-        <div className="form-actions">
-          <button
-            className="btn btn-secondary"
+      <Card>
+        <CardHeader>
+          <CardTitle>{t('policy.title')}</CardTitle>
+        </CardHeader>
+        <CardContent>
+          <Button
+            variant="secondary"
+            className="w-full"
             onClick={(): void => {
               void navigate('/anti-detection')
             }}
-            style={{ flex: 1 }}
             data-testid="open-anti-detection"
           >
             {t('policy.openSettings')}
-          </button>
-        </div>
-      </div>
+          </Button>
+        </CardContent>
+      </Card>
     </div>
   )
 }

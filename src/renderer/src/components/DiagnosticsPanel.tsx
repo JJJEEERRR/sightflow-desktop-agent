@@ -2,6 +2,9 @@ import { useCallback, useEffect, useMemo, useRef, useState, JSX } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useTranslation } from 'react-i18next'
 import { ipc } from '../lib/ipc'
+import { cn } from '../lib/utils'
+import { Button } from './ui/button'
+import { Card, CardContent, CardHeader, CardTitle } from './ui/card'
 import type {
   LifecycleEvent,
   LifecycleSnapshot,
@@ -41,24 +44,54 @@ interface DiagnosticsPanelProps {
   onToast?: (msg: string, type: 'success' | 'error') => void
 }
 
+// Tailwind class fragments for the colored "state pill" used in the
+// lifecycle card and transition rows. Centralized so the two locations
+// can't drift visually.
+const STATE_PILL_BASE =
+  'inline-block rounded-full border bg-card px-2 py-0.5 text-[10px] font-semibold uppercase tracking-[0.06em] font-mono'
+const STATE_PILL_VARIANTS: Record<string, string> = {
+  idle: 'border-border text-muted-foreground',
+  stopped: 'border-border text-muted-foreground',
+  running: 'border-primary/20 bg-primary/[0.08] text-primary',
+  paused: 'border-warning/20 bg-warning/[0.08] text-warning',
+  crashed: 'border-destructive/20 bg-destructive/[0.08] text-destructive',
+  recovering: 'border-[hsl(213_94%_68%/0.2)] bg-[hsl(213_94%_68%/0.08)] text-[hsl(213_94%_68%)]'
+}
+
+function statePill(state: string): string {
+  return cn(STATE_PILL_BASE, STATE_PILL_VARIANTS[state] ?? STATE_PILL_VARIANTS.idle)
+}
+
+const LOG_ROW_LEVEL_COLOR: Record<LogLevel, string> = {
+  trace: 'text-muted-foreground',
+  debug: 'text-muted-foreground',
+  info: 'text-foreground',
+  warn: 'text-warning',
+  error: 'text-destructive'
+}
+
+const LOG_LEVEL_BADGE_COLOR: Record<LogLevel, string> = {
+  trace: 'text-muted-foreground',
+  debug: 'text-muted-foreground',
+  info: 'text-primary',
+  warn: 'text-warning',
+  error: 'text-destructive'
+}
+
 /**
- * Diagnostics view. Shows lifecycle snapshot + live logs + recent
+ * Diagnostics view. Lifecycle snapshot + live log stream + recent
  * transitions, all driven by IPC channels established in Phase 1
  * (`engine:lifecycle`, `logs:recent`, `engine:log-record`, `engine:state`).
  *
- * As of Phase 5 PR2:
- *  - `logs:recent` ring-buffer pull (PR1) — `useQuery` with a 1.5s
- *    `refetchInterval` belt-and-suspenders for the push feed.
- *  - `engine:lifecycle` initial backfill — `useQuery` (PR2). Push events
- *    on `engine:state` route into the same cache key via `setQueryData`
- *    so a single source of truth holds the snapshot.
- *  - `engine:log-record` push events route into the logs cache via
- *    `setQueryData` (PR1).
- *  - The transitions list stays in local `useState` because it's a
- *    page-local accumulation of push events with no IPC channel of its
- *    own — see ADR-0013 migration outcome §"State-mgmt-via-cache vs
- *    page-local useState".
- *  - `diag:export` is a one-shot mutation via `useMutation`.
+ * Phase 5 PR2: every IPC call is now `useQuery` / `useMutation`; push
+ * channels (`engine:state`, `engine:log-record`) route into the same
+ * cache keys via `setQueryData` for a single source of truth.
+ *
+ * Phase 5 PR4: replaced `.card`/`.diag-*`/`.btn` hand-written classes
+ * with Tailwind utilities + shadcn primitives (`Card`, `Button`). The
+ * coloured state pill is derived from a single Tailwind class map
+ * (`STATE_PILL_VARIANTS`) so the lifecycle card and the transition rows
+ * cannot drift.
  */
 export function DiagnosticsPanel({ onToast }: DiagnosticsPanelProps): JSX.Element {
   const { t } = useTranslation()
@@ -69,11 +102,6 @@ export function DiagnosticsPanel({ onToast }: DiagnosticsPanelProps): JSX.Elemen
 
   const logStreamRef = useRef<HTMLDivElement>(null)
 
-  // ── Logs (react-query) ───────────────────────────────────────────────
-  // Polling every 1.5s gives a backstop in case a push event is missed
-  // (e.g. main process restart while the renderer stays open). The 5-second
-  // staleTime in the global QueryClient is deliberately overridden to 0
-  // here so the polling actually round-trips.
   const { data: logs = [] } = useQuery<LogRecord[]>({
     queryKey: LOGS_QUERY_KEY,
     queryFn: async () => {
@@ -84,11 +112,6 @@ export function DiagnosticsPanel({ onToast }: DiagnosticsPanelProps): JSX.Elemen
     staleTime: 0
   })
 
-  // ── Lifecycle (react-query, push-driven) ─────────────────────────────
-  // No `refetchInterval` — the `engine:state` push channel keeps the
-  // cache fresh; this `useQuery` exists purely for the initial backfill
-  // and to give consumers a `data` slot that re-renders when the push
-  // subscriber writes via `setQueryData`.
   const { data: snapshot = null } = useQuery<LifecycleSnapshot | null>({
     queryKey: LIFECYCLE_QUERY_KEY,
     queryFn: async () => {
@@ -96,15 +119,12 @@ export function DiagnosticsPanel({ onToast }: DiagnosticsPanelProps): JSX.Elemen
         const lifecycle = await ipc.invoke<LifecycleSnapshot | null>('engine:lifecycle')
         return lifecycle ?? null
       } catch {
-        // Defensive: a missing handler shouldn't crash the page; treat
-        // as "no snapshot yet" and let the push channel populate it.
         return null
       }
     },
     staleTime: Infinity
   })
 
-  // ── Live log records → react-query cache ─────────────────────────────
   useEffect(() => {
     const cleanup = window.electron?.on('engine:log-record', (...args) => {
       const record = args[0] as LogRecord | undefined
@@ -118,16 +138,6 @@ export function DiagnosticsPanel({ onToast }: DiagnosticsPanelProps): JSX.Elemen
     return cleanup
   }, [queryClient])
 
-  // ── Live lifecycle transitions ───────────────────────────────────────
-  // Writes the snapshot into the same cache key as the lifecycle useQuery
-  // (single source of truth). The transitions list itself stays in local
-  // state — there is no `engine:transitions` IPC channel, so the cache
-  // would just be page-local state in disguise.
-  //
-  // Note: AppLayout's `useEngineSubscription` also writes to
-  // `['engine:lifecycle']` from the same push channel; the two writes are
-  // idempotent. Tests that mount DiagnosticsPanel without AppLayout still
-  // see lifecycle updates via this local listener.
   useEffect(() => {
     const cleanup = window.electron?.on('engine:state', (...args) => {
       const payload = args[0] as LifecycleStatePayload | undefined
@@ -141,17 +151,11 @@ export function DiagnosticsPanel({ onToast }: DiagnosticsPanelProps): JSX.Elemen
     return cleanup
   }, [queryClient])
 
-  // Auto-scroll the log container to the bottom when new records land.
-  // Using `scrollTop = scrollHeight` instead of `scrollIntoView` keeps this
-  // jsdom-friendly (jsdom has no layout engine and stubs `scrollIntoView`
-  // off entirely).
   useEffect(() => {
     const el = logStreamRef.current
     if (el) el.scrollTop = el.scrollHeight
   }, [logs])
 
-  // Phase options derived from records — keeps the dropdown honest as new
-  // modules emit logs (e.g. once Phase 3 adds `policy.*`).
   const phaseOptions = useMemo<string[]>(() => {
     const set = new Set<string>()
     for (const r of logs) set.add(r.phase)
@@ -182,14 +186,9 @@ export function DiagnosticsPanel({ onToast }: DiagnosticsPanelProps): JSX.Elemen
     a.download = filename
     a.click()
     setTimeout(() => URL.revokeObjectURL(url), 0)
-    // Mirrors the IPC button's "<phrase>: <destination>" pattern so both
-    // local-Blob and main-process zip exports read consistently.
     onToast?.(`${t('diag.export.success')}: ${filename}`, 'success')
   }, [logs, snapshot, transitions, onToast, t])
 
-  // Triggers the main-side `diag:export` handler (Track A) which writes a zip
-  // to disk containing logs + config + state snapshot. The renderer never
-  // touches the filesystem; we just surface the resulting path/error via toast.
   const diagExport = useMutation<
     DiagExportResult,
     Error,
@@ -216,94 +215,122 @@ export function DiagnosticsPanel({ onToast }: DiagnosticsPanelProps): JSX.Elemen
     diagExport.mutate({ includeLogs: true, daysBack: 14 })
   }, [diagExport])
 
+  const filterSelectClass =
+    'h-7 cursor-pointer rounded-md border border-input bg-background/40 px-2 font-mono text-[11px] text-foreground outline-none focus-visible:border-ring focus-visible:ring-1 focus-visible:ring-ring'
+
   return (
-    <div className="slide-up">
-      <div className="card diag-card">
-        <div className="card-title">{t('diag.lifecycle.title')}</div>
-        <LifecycleCard snapshot={snapshot} />
-      </div>
+    <div className="animate-slide-up space-y-3">
+      <Card>
+        <CardHeader>
+          <CardTitle>{t('diag.lifecycle.title')}</CardTitle>
+        </CardHeader>
+        <CardContent>
+          <LifecycleCard snapshot={snapshot} />
+        </CardContent>
+      </Card>
 
-      <div className="card diag-card">
-        <div className="card-title diag-card-title-row">
-          <span>{t('diag.logs.title')}</span>
-          <div className="diag-filters">
-            <select
-              className="diag-filter"
-              value={levelFilter}
-              onChange={(e): void => setLevelFilter(e.target.value as LogLevel | 'all')}
-              aria-label={t('diag.logs.filterLevel')}
-            >
-              {LEVEL_OPTIONS.map((lvl) => (
-                <option key={lvl} value={lvl}>
-                  {lvl === 'all' ? t('diag.logs.filterAll') : lvl}
-                </option>
-              ))}
-            </select>
-            <select
-              className="diag-filter"
-              value={phaseFilter}
-              onChange={(e): void => setPhaseFilter(e.target.value)}
-              aria-label={t('diag.logs.filterPhase')}
-            >
-              {phaseOptions.map((p) => (
-                <option key={p} value={p}>
-                  {p === 'all' ? t('diag.logs.filterAll') : p}
-                </option>
-              ))}
-            </select>
+      <Card>
+        <CardHeader>
+          <div className="flex items-center justify-between gap-2">
+            <CardTitle>{t('diag.logs.title')}</CardTitle>
+            <div className="flex gap-1.5 normal-case tracking-normal">
+              <select
+                className={filterSelectClass}
+                value={levelFilter}
+                onChange={(e): void => setLevelFilter(e.target.value as LogLevel | 'all')}
+                aria-label={t('diag.logs.filterLevel')}
+              >
+                {LEVEL_OPTIONS.map((lvl) => (
+                  <option key={lvl} value={lvl}>
+                    {lvl === 'all' ? t('diag.logs.filterAll') : lvl}
+                  </option>
+                ))}
+              </select>
+              <select
+                className={filterSelectClass}
+                value={phaseFilter}
+                onChange={(e): void => setPhaseFilter(e.target.value)}
+                aria-label={t('diag.logs.filterPhase')}
+              >
+                {phaseOptions.map((p) => (
+                  <option key={p} value={p}>
+                    {p === 'all' ? t('diag.logs.filterAll') : p}
+                  </option>
+                ))}
+              </select>
+            </div>
           </div>
-        </div>
-        <div className="diag-log-stream" data-testid="diag-log-stream" ref={logStreamRef}>
-          {filtered.length === 0 ? (
-            <div className="message-log-empty">{t('diag.logs.empty')}</div>
+        </CardHeader>
+        <CardContent>
+          <div
+            ref={logStreamRef}
+            data-testid="diag-log-stream"
+            className="max-h-[320px] overflow-y-auto rounded-md border border-border bg-black/25 p-2 font-mono text-[11px] leading-[1.55]"
+          >
+            {filtered.length === 0 ? (
+              <div className="flex h-[160px] items-center justify-center font-sans text-xs text-muted-foreground">
+                {t('diag.logs.empty')}
+              </div>
+            ) : (
+              filtered.map((r, i) => <LogRow key={`${r.ts}-${i}`} record={r} />)
+            )}
+          </div>
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle>{t('diag.transitions.title')}</CardTitle>
+        </CardHeader>
+        <CardContent>
+          {transitions.length === 0 ? (
+            <div className="flex h-[160px] items-center justify-center font-sans text-xs text-muted-foreground">
+              {t('diag.transitions.empty')}
+            </div>
           ) : (
-            filtered.map((r, i) => <LogRow key={`${r.ts}-${i}`} record={r} />)
+            <ul className="m-0 flex max-h-[200px] list-none flex-col gap-1.5 overflow-y-auto p-0">
+              {transitions
+                .slice()
+                .reverse()
+                .map((evt, i) => (
+                  <li
+                    className="flex items-center gap-2 font-mono text-[11px]"
+                    data-testid="diag-transition-row"
+                    key={`${evt.at}-${i}`}
+                  >
+                    <span className="min-w-[64px] text-muted-foreground">{shortTime(evt.at)}</span>
+                    <span className={statePill(evt.from)} data-testid="diag-state-pill">
+                      {evt.from}
+                    </span>
+                    <span className="text-muted-foreground">→</span>
+                    <span className={statePill(evt.to)} data-testid="diag-state-pill">
+                      {evt.to}
+                    </span>
+                    {evt.reason ? (
+                      <span className="italic text-muted-foreground">{evt.reason}</span>
+                    ) : null}
+                  </li>
+                ))}
+            </ul>
           )}
-        </div>
-      </div>
+        </CardContent>
+      </Card>
 
-      <div className="card diag-card">
-        <div className="card-title">{t('diag.transitions.title')}</div>
-        {transitions.length === 0 ? (
-          <div className="message-log-empty">{t('diag.transitions.empty')}</div>
-        ) : (
-          <ul className="diag-transitions">
-            {transitions
-              .slice()
-              .reverse()
-              .map((evt, i) => (
-                <li className="diag-transition" key={`${evt.at}-${i}`}>
-                  <span className="diag-transition-time">{shortTime(evt.at)}</span>
-                  <span className={`diag-state-pill ${evt.from}`}>{evt.from}</span>
-                  <span className="diag-transition-arrow">→</span>
-                  <span className={`diag-state-pill ${evt.to}`}>{evt.to}</span>
-                  {evt.reason ? <span className="diag-transition-reason">{evt.reason}</span> : null}
-                </li>
-              ))}
-          </ul>
-        )}
-      </div>
-
-      <div className="form-actions diag-export-actions">
-        <button
-          className="btn btn-secondary diag-export-btn-ipc"
+      <div className="flex gap-2">
+        <Button
+          variant="secondary"
+          className="flex-1"
           onClick={handleIpcExport}
           disabled={isExporting}
-          style={{ flex: 1 }}
           data-testid="diag-export-ipc-btn"
           title={t('diag.export.aria')}
         >
           <DownloadIcon />
           {isExporting ? t('diag.export.exporting') : t('diag.export.label')}
-        </button>
-        <button
-          className="btn btn-primary"
-          onClick={handleExport}
-          style={{ flex: 1 }}
-          data-testid="diag-export-btn"
-        >
+        </Button>
+        <Button className="flex-1" onClick={handleExport} data-testid="diag-export-btn">
           {t('diag.export')}
-        </button>
+        </Button>
       </div>
     </div>
   )
@@ -330,61 +357,71 @@ function DownloadIcon(): JSX.Element {
   )
 }
 
-// ── Sub-components ─────────────────────────────────────────────────────────
-
 function LifecycleCard({ snapshot }: { snapshot: LifecycleSnapshot | null }): JSX.Element {
   const { t } = useTranslation()
   if (!snapshot) {
     return (
-      <div className="diag-lifecycle-empty">
-        <span className={`diag-state-pill idle`}>idle</span>
-        <span style={{ marginLeft: 8, opacity: 0.7 }}>—</span>
+      <div className="flex items-center gap-2">
+        <span className={statePill('idle')}>idle</span>
+        <span className="text-muted-foreground/70">—</span>
       </div>
     )
   }
   return (
-    <div className="diag-lifecycle-grid">
-      <div className="diag-row">
-        <span className="diag-label">{t('diag.lifecycle.state')}</span>
-        <span className={`diag-state-pill ${snapshot.state}`}>{snapshot.state}</span>
-      </div>
-      <div className="diag-row">
-        <span className="diag-label">{t('diag.lifecycle.enteredAt')}</span>
-        <span className="diag-value">{shortTime(snapshot.enteredAt)}</span>
-      </div>
-      <div className="diag-row">
-        <span className="diag-label">{t('diag.lifecycle.restartBudget')}</span>
-        <span className="diag-value">
+    <div className="flex flex-col gap-2">
+      <DiagRow label={t('diag.lifecycle.state')}>
+        <span className={statePill(snapshot.state)}>{snapshot.state}</span>
+      </DiagRow>
+      <DiagRow label={t('diag.lifecycle.enteredAt')}>
+        <span className="font-mono text-xs text-foreground">{shortTime(snapshot.enteredAt)}</span>
+      </DiagRow>
+      <DiagRow label={t('diag.lifecycle.restartBudget')}>
+        <span className="font-mono text-xs text-foreground">
           {snapshot.restartBudget.used}/{snapshot.restartBudget.max}
-          <span className="diag-subvalue">
+          <span className="ml-1.5 text-[11px] text-muted-foreground/80">
             ({t('diag.lifecycle.windowEndsAt')} {shortTime(snapshot.restartBudget.windowEndsAt)})
           </span>
         </span>
-      </div>
+      </DiagRow>
       {snapshot.lastError ? (
-        <div className="diag-row">
-          <span className="diag-label">{t('diag.lifecycle.lastError')}</span>
-          <span className="diag-value diag-error-msg">
+        <DiagRow label={t('diag.lifecycle.lastError')}>
+          <span className="font-mono text-xs text-destructive">
             {snapshot.lastError.name}: {snapshot.lastError.message}
           </span>
-        </div>
+        </DiagRow>
       ) : null}
+    </div>
+  )
+}
+
+function DiagRow({ label, children }: { label: string; children: JSX.Element }): JSX.Element {
+  return (
+    <div className="flex items-center gap-2.5 text-xs">
+      <span className="min-w-[76px] text-[11px] uppercase tracking-[0.04em] text-muted-foreground">
+        {label}
+      </span>
+      {children}
     </div>
   )
 }
 
 function LogRow({ record }: { record: LogRecord }): JSX.Element {
   return (
-    <div className={`diag-log-row diag-log-${record.level}`}>
-      <span className="diag-log-time">{shortTime(record.ts)}</span>
-      <span className={`diag-log-level diag-log-${record.level}`}>
+    <div
+      className={cn(
+        'grid grid-cols-[64px_56px_100px_1fr] gap-2 break-words py-0.5',
+        LOG_ROW_LEVEL_COLOR[record.level]
+      )}
+    >
+      <span className="text-muted-foreground">{shortTime(record.ts)}</span>
+      <span className={cn('font-semibold tracking-[0.04em]', LOG_LEVEL_BADGE_COLOR[record.level])}>
         {record.level.toUpperCase()}
       </span>
-      <span className="diag-log-phase">{record.phase}</span>
-      <span className="diag-log-msg">
+      <span className="text-muted-foreground">{record.phase}</span>
+      <span>
         {record.msg}
         {record.err ? (
-          <span className="diag-log-err">
+          <span className="text-destructive">
             {' — '}
             {record.err.name}: {record.err.message}
           </span>
@@ -394,12 +431,7 @@ function LogRow({ record }: { record: LogRecord }): JSX.Element {
   )
 }
 
-// ── Helpers ────────────────────────────────────────────────────────────────
-
 function shortTime(iso: string): string {
-  // Render ISO timestamps as HH:MM:SS so the stream is dense; fall back to
-  // the raw string if parsing fails (defensive — the logger always emits
-  // ISO-8601, but a future sink could yield a different shape).
   const d = new Date(iso)
   if (Number.isNaN(d.getTime())) return iso
   const hh = String(d.getHours()).padStart(2, '0')

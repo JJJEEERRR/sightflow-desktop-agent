@@ -54,5 +54,18 @@ export default defineConfig(
       ]
     }
   },
+  {
+    // Phase 5 PR4: shadcn/ui primitives are vendored copy-ins from
+    // `https://ui.shadcn.com/docs/components/...`. They follow upstream
+    // conventions verbatim (named + variant exports from one file,
+    // `forwardRef` with rest-spread props that don't satisfy
+    // `react/prop-types`). Relaxing those two rules in this directory
+    // keeps the files diff-clean against future upstream updates.
+    files: ['src/renderer/src/components/ui/**/*.{ts,tsx}'],
+    rules: {
+      'react/prop-types': 'off',
+      'react-refresh/only-export-components': 'off'
+    }
+  },
   eslintConfigPrettier
 )

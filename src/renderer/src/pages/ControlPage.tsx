@@ -2,10 +2,13 @@ import { JSX, useCallback, useEffect, useRef, useState } from 'react'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { useTranslation } from 'react-i18next'
 import { ipc } from '../lib/ipc'
+import { cn } from '../lib/utils'
 import { useEngineStore } from '../stores/engine'
 import { useSettingsStore } from '../stores/settings'
 import { useToastStore } from '../stores/toast'
 import { PlayIcon, StopIcon } from '../components/icons'
+import { Card, CardContent, CardHeader, CardTitle } from '../components/ui/card'
+import { StatusDot } from '../layout/AppLayout'
 import type { AppKind } from '../types'
 
 interface LogEntry {
@@ -26,6 +29,13 @@ const LOG_TYPE_KEY = {
   skip: 'control.log.skip',
   error: 'control.log.error'
 } as const
+
+const LOG_TYPE_COLOR: Record<LogEntry['type'], string> = {
+  thinking: 'text-warning',
+  reply: 'text-primary',
+  skip: 'text-muted-foreground',
+  error: 'text-destructive'
+}
 
 interface EngineLogPayload {
   type: string
@@ -72,6 +82,11 @@ interface EngineStartConfig {
  *    here. The store is the single source of truth for the coarse
  *    running/idle/error indicator; the rich `engine:lifecycle` snapshot
  *    lives in the react-query cache (DiagnosticsPanel).
+ *
+ * Phase 5 PR4: visual surface migrated to Tailwind utilities + shadcn
+ * primitives (`Button`, `Card`). The big start/stop button keeps its
+ * pill-shape, gradient fill, and accent-glow shadow via custom Tailwind
+ * arbitrary-value classes so visual fidelity matches the pre-PR4 look.
  */
 export function ControlPage(): JSX.Element {
   const { t } = useTranslation()
@@ -171,65 +186,96 @@ export function ControlPage(): JSX.Element {
   const running = status === 'running'
 
   return (
-    <div className="fade-in">
-      <div className={`status-indicator ${status}`}>
-        <div className={`status-dot ${status}`} />
-        <span className="status-text">{statusLabel}</span>
+    <div className="animate-fade-in space-y-3">
+      <div
+        className={cn(
+          'flex items-center gap-2.5 rounded-md border border-border bg-card/80 px-3.5 py-3 backdrop-blur-md transition-colors',
+          status === 'running' &&
+            'border-primary/15 bg-primary/[0.08] shadow-[0_0_20px_hsl(var(--primary)/0.05)]',
+          status === 'error' && 'border-destructive/15 bg-destructive/[0.08]'
+        )}
+        data-testid="control-status"
+      >
+        <StatusDot status={status} />
+        <span className="text-sm font-medium">{statusLabel}</span>
       </div>
 
-      <div className="card">
-        <div className="card-title">应用类型</div>
-        <select
-          className="form-input"
-          value={draft.appType ?? 'weixin'}
-          onChange={(e): void => patchDraft({ appType: e.target.value as AppKind })}
-          aria-label="appType"
-        >
-          <option value="weixin">微信</option>
-          <option value="wework">企业微信</option>
-        </select>
-      </div>
+      <Card>
+        <CardHeader>
+          <CardTitle>应用类型</CardTitle>
+        </CardHeader>
+        <CardContent>
+          <select
+            className="flex h-9 w-full cursor-pointer rounded-md border border-input bg-background/40 px-3 py-1 text-xs font-mono text-foreground shadow-sm transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+            value={draft.appType ?? 'weixin'}
+            onChange={(e): void => patchDraft({ appType: e.target.value as AppKind })}
+            aria-label="appType"
+          >
+            <option value="weixin">微信</option>
+            <option value="wework">企业微信</option>
+          </select>
+        </CardContent>
+      </Card>
 
-      <div className="form-actions" style={{ marginBottom: 12 }}>
+      <div className="flex">
         {running ? (
           <button
-            className="bottom-btn bottom-btn-stop"
+            type="button"
+            className="no-drag flex h-12 flex-1 items-center justify-center gap-2 rounded-full border border-destructive/20 bg-gradient-to-br from-destructive/20 to-destructive/15 px-7 text-[13px] font-semibold text-destructive shadow-[0_4px_24px_hsl(var(--destructive)/0.1),inset_0_1px_0_hsl(0_0%_100%/0.05)] backdrop-blur-md transition-all duration-300 ease-out hover:-translate-y-0.5 hover:border-destructive/35 hover:shadow-[0_8px_32px_hsl(var(--destructive)/0.15),inset_0_1px_0_hsl(0_0%_100%/0.08)] active:translate-y-0 disabled:pointer-events-none disabled:opacity-50 [&_svg]:h-[18px] [&_svg]:w-[18px]"
             onClick={handleStop}
             disabled={stopEngine.isPending}
-            style={{ flex: 1 }}
             aria-label={t('control.stop')}
+            data-testid="control-stop"
           >
             <StopIcon />
           </button>
         ) : (
           <button
-            className="bottom-btn bottom-btn-start bottom-btn-play"
+            type="button"
+            className="no-drag flex h-12 flex-1 items-center justify-center gap-2 rounded-full border border-primary/30 bg-gradient-to-br from-primary to-[hsl(160_84%_31%)] px-7 text-[13px] font-semibold text-primary-foreground shadow-[0_4px_24px_hsl(var(--primary)/0.35),inset_0_1px_0_hsl(0_0%_100%/0.15)] backdrop-blur-md transition-all duration-300 ease-out hover:-translate-y-0.5 hover:border-primary/50 hover:shadow-[0_8px_32px_hsl(var(--primary)/0.35),0_0_60px_hsl(var(--primary)/0.15),inset_0_1px_0_hsl(0_0%_100%/0.2)] active:translate-y-0 active:shadow-[0_2px_12px_hsl(var(--primary)/0.35)] disabled:pointer-events-none disabled:opacity-50 [&_svg]:h-[18px] [&_svg]:w-[18px]"
             onClick={handleStart}
             disabled={startEngine.isPending}
-            style={{ flex: 1 }}
             aria-label={t('control.start')}
+            data-testid="control-start"
           >
             <PlayIcon />
           </button>
         )}
       </div>
 
-      <div className="card">
-        <div className="card-title">{t('control.log')}</div>
-        <div className="message-log" ref={logRef}>
-          {logs.length === 0 ? (
-            <div className="message-log-empty">{t('control.log.empty')}</div>
-          ) : (
-            logs.map((entry, i) => (
-              <div className="log-entry" key={i}>
-                <span className="log-time">{entry.time}</span>
-                <span className={`log-type ${entry.type}`}>{t(LOG_TYPE_KEY[entry.type])}</span>
-                <span>{entry.content}</span>
+      <Card>
+        <CardHeader>
+          <CardTitle>{t('control.log')}</CardTitle>
+        </CardHeader>
+        <CardContent>
+          <div
+            ref={logRef}
+            className="min-h-[160px] max-h-[360px] overflow-y-auto rounded-md border border-border bg-black/25 p-2.5 font-mono text-[11px] leading-7"
+          >
+            {logs.length === 0 ? (
+              <div className="flex h-[160px] items-center justify-center font-sans text-xs text-muted-foreground">
+                {t('control.log.empty')}
               </div>
-            ))
-          )}
-        </div>
-      </div>
+            ) : (
+              logs.map((entry, i) => (
+                <div
+                  key={i}
+                  className="border-b border-white/[0.02] py-[3px] last:border-b-0"
+                  data-testid="log-entry"
+                >
+                  <span className="mr-1.5 text-[10px] text-muted-foreground/80">{entry.time}</span>
+                  <span
+                    className={cn('mr-[5px] text-[10px] font-semibold', LOG_TYPE_COLOR[entry.type])}
+                  >
+                    {t(LOG_TYPE_KEY[entry.type])}
+                  </span>
+                  <span>{entry.content}</span>
+                </div>
+              ))
+            )}
+          </div>
+        </CardContent>
+      </Card>
     </div>
   )
 }

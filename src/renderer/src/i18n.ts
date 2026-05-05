@@ -120,6 +120,12 @@ const translations = {
     'policy.saved': '反封号配置已保存',
     'policy.saveFailed': '保存失败',
     'policy.resetBreakerDone': '熔断器已重置',
+    'policy.ocr.title': 'OCR 弹窗检测',
+    'policy.ocr.enabled': '启用 OCR',
+    'policy.ocr.sampleIntervalMs': '采样间隔（毫秒）',
+    'policy.ocr.language': 'OCR 语言（如 chi_sim+eng）',
+    'policy.ocr.hint':
+      '启用 OCR 后会在每次截屏后采样识别文字，匹配封号关键词时立即触发熔断。每次扫描约 200–500ms，首次启用会下载约 10MB 语言包。修改设置后需重启引擎生效。',
 
     // Toast
     'toast.engineStarted': '引擎已启动',
@@ -237,6 +243,12 @@ const translations = {
     'policy.saved': 'Anti-detection settings saved',
     'policy.saveFailed': 'Save failed',
     'policy.resetBreakerDone': 'Breaker reset',
+    'policy.ocr.title': 'OCR popup detection',
+    'policy.ocr.enabled': 'Enable OCR',
+    'policy.ocr.sampleIntervalMs': 'Sample interval (ms)',
+    'policy.ocr.language': 'OCR language (e.g. chi_sim+eng)',
+    'policy.ocr.hint':
+      'When enabled, samples each screenshot for text and trips the circuit breaker on banned keyword matches. Each scan adds ~200–500ms latency; the first enable downloads ~10MB of language data. Restart the engine after changing settings.',
 
     'toast.engineStarted': 'Engine started',
     'toast.engineStopped': 'Engine stopped',

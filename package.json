@@ -42,6 +42,7 @@
     "node-window-manager": "^2.2.4",
     "pixelmatch": "^7.1.0",
     "pngjs": "^7.0.0",
+    "tesseract.js": "^7.0.0",
     "zod": "^3.25.76"
   },
   "overrides": {

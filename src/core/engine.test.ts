@@ -5,6 +5,7 @@ import type { DesktopDevice } from './device'
 import type { AppType } from './rpa/types'
 import { Lifecycle, type LifecycleEvent } from './runtime'
 import type { AgentBrain, BrainContext, BrainStream } from './brain'
+import type { OcrEngine } from './ocr'
 
 /**
  * Build an in-memory `DesktopDevice` whose behaviour can be programmed per
@@ -982,6 +983,220 @@ describe('Engine.policy integration (Phase 3)', () => {
     const clickAfters = afterActions.filter((a) => a.type === 'click')
     expect(clickAfters.length).toBeGreaterThanOrEqual(2)
     expect(clickAfters.every((a) => a.success === true)).toBe(true)
+  })
+
+  // ── OCR integration (Phase 4) ──────────────────────────────────────────
+  // The engine should sample-rate-limit OCR by `policy.config.ocr.sampleIntervalMs`,
+  // observe `screenText` on a non-empty result, and skip the call entirely
+  // when ocr.enabled is false.
+
+  interface FakeOcr extends OcrEngine {
+    extractCalls: Buffer[]
+    disposeCount: number
+  }
+
+  function makeFakeOcr(textProvider: () => string = (): string => 'normal screen'): FakeOcr {
+    const extractCalls: Buffer[] = []
+    let disposeCount = 0
+    return {
+      extractCalls,
+      get disposeCount(): number {
+        return disposeCount
+      },
+      extract: async (buf: Buffer) => {
+        extractCalls.push(buf)
+        return textProvider()
+      },
+      dispose: async (): Promise<void> => {
+        disposeCount++
+      }
+    }
+  }
+
+  function makeOcrPolicy(opts: {
+    ocrEnabled: boolean
+    sampleIntervalMs?: number
+    observed: Array<{ type: string; text?: string; hash?: string }>
+  }): import('./policy').AntiDetectionPolicy {
+    const cfg = {
+      humanizer: {},
+      rateLimiter: {},
+      schedule: {},
+      circuitBreaker: {},
+      ocr: {
+        enabled: opts.ocrEnabled,
+        sampleIntervalMs: opts.sampleIntervalMs ?? 30_000,
+        language: 'chi_sim+eng'
+      }
+    }
+    const policy = {
+      beforeReply: async () => ({ proceed: true as const }),
+      beforeAction: async () => ({}),
+      afterAction: async () => {},
+      observe: (signal: { type: string; text?: string; hash?: string }) => {
+        opts.observed.push(signal)
+      },
+      resetBreaker: () => {},
+      snapshot: () => ({}) as never,
+      updateConfig: () => {},
+      getConfig: () => cfg as never
+    }
+    return policy as unknown as import('./policy').AntiDetectionPolicy
+  }
+
+  it('OCR: when ocr.enabled is false, extract is NOT called', async () => {
+    const state: FakeDeviceState = {
+      measureLayoutResult: { success: true },
+      hasUnreadQueue: [{ hasUnread: false }, { hasUnread: false }],
+      isContactUnreadQueue: [],
+      hasChatAreaChangedQueue: [
+        { hasDiff: true, hasBaseline: true },
+        { hasDiff: false, hasBaseline: true }
+      ],
+      // Real base64 (data: prefix) so screenshotToBuffer produces a non-empty buf.
+      screenshotResult: 'data:image/png;base64,QUJD',
+      calls: []
+    }
+    const device = makeFakeDevice(state)
+    const brain = makeFakeBrain([[{ type: 'skip' }], [{ type: 'skip' }]])
+    const hooks = makeFakeHooks()
+    const observed: Array<{ type: string; text?: string }> = []
+    const policy = makeOcrPolicy({ ocrEnabled: false, observed })
+    const ocr = makeFakeOcr()
+
+    const engine = new Engine(brain, device, hooks, undefined, undefined, policy, ocr)
+    const p = engine.start()
+    await vi.advanceTimersByTimeAsync(50)
+    await vi.advanceTimersByTimeAsync(15_000)
+    engine.stop()
+    await vi.advanceTimersByTimeAsync(2_000)
+    await p
+
+    expect(ocr.extractCalls.length).toBe(0)
+    expect(observed.find((s) => s.type === 'screenText')).toBeUndefined()
+  })
+
+  it('OCR: when enabled and interval elapsed, extract runs and screenText is observed', async () => {
+    const state: FakeDeviceState = {
+      measureLayoutResult: { success: true },
+      hasUnreadQueue: [{ hasUnread: false }],
+      isContactUnreadQueue: [],
+      hasChatAreaChangedQueue: [{ hasDiff: false, hasBaseline: true }],
+      screenshotResult: 'data:image/png;base64,QUJD',
+      calls: []
+    }
+    const device = makeFakeDevice(state)
+    const brain = makeFakeBrain([[{ type: 'skip' }]])
+    const hooks = makeFakeHooks()
+    const observed: Array<{ type: string; text?: string }> = []
+    const policy = makeOcrPolicy({
+      ocrEnabled: true,
+      sampleIntervalMs: 1_000,
+      observed
+    })
+    const ocr = makeFakeOcr(() => 'matched: 账号异常')
+
+    // Inject a controlled clock — first OCR call happens at t=0 (>= 1000ms
+    // since lastOcrAt=0), so the gate fires immediately.
+    const now = 1_000_000
+    const engine = new Engine(brain, device, hooks, undefined, undefined, policy, ocr, () => now)
+    const p = engine.start()
+    await vi.advanceTimersByTimeAsync(50)
+    await vi.advanceTimersByTimeAsync(6_000)
+    engine.stop()
+    await vi.advanceTimersByTimeAsync(2_000)
+    await p
+
+    expect(ocr.extractCalls.length).toBeGreaterThanOrEqual(1)
+    const screenTextObs = observed.filter((s) => s.type === 'screenText')
+    expect(screenTextObs.length).toBeGreaterThanOrEqual(1)
+    expect(screenTextObs[0].text).toBe('matched: 账号异常')
+    // Sanity: data-URL prefix was stripped — buffer matches the base64 payload "QUJD" → "ABC".
+    expect(ocr.extractCalls[0].toString('utf8')).toBe('ABC')
+    // Engine.stop() should have triggered dispose() best-effort.
+    // The dispose promise is intentionally fire-and-forget; await microtasks.
+    await Promise.resolve()
+    expect(ocr.disposeCount).toBeGreaterThanOrEqual(1)
+  })
+
+  it('OCR: empty extract result does NOT emit screenText', async () => {
+    const state: FakeDeviceState = {
+      measureLayoutResult: { success: true },
+      hasUnreadQueue: [{ hasUnread: false }],
+      isContactUnreadQueue: [],
+      hasChatAreaChangedQueue: [{ hasDiff: false, hasBaseline: true }],
+      screenshotResult: 'data:image/png;base64,QUJD',
+      calls: []
+    }
+    const device = makeFakeDevice(state)
+    const brain = makeFakeBrain([[{ type: 'skip' }]])
+    const hooks = makeFakeHooks()
+    const observed: Array<{ type: string; text?: string }> = []
+    const policy = makeOcrPolicy({
+      ocrEnabled: true,
+      sampleIntervalMs: 1_000,
+      observed
+    })
+    const ocr = makeFakeOcr(() => '')
+
+    const now = 1_000_000
+    const engine = new Engine(brain, device, hooks, undefined, undefined, policy, ocr, () => now)
+    const p = engine.start()
+    await vi.advanceTimersByTimeAsync(50)
+    await vi.advanceTimersByTimeAsync(6_000)
+    engine.stop()
+    await vi.advanceTimersByTimeAsync(2_000)
+    await p
+
+    expect(ocr.extractCalls.length).toBeGreaterThanOrEqual(1)
+    expect(observed.find((s) => s.type === 'screenText')).toBeUndefined()
+  })
+
+  it('OCR: rate-limits extracts to one per sampleIntervalMs across multiple ticks', async () => {
+    // Force two consecutive processCurrentChat invocations close in time
+    // and assert exactly ONE OCR call lands.
+    const state: FakeDeviceState = {
+      measureLayoutResult: { success: true },
+      hasUnreadQueue: [{ hasUnread: false }],
+      isContactUnreadQueue: [],
+      // hasDiff:true triggers the loop to re-enter processCurrentChat.
+      hasChatAreaChangedQueue: [
+        { hasDiff: true, hasBaseline: true },
+        { hasDiff: true, hasBaseline: true },
+        { hasDiff: false, hasBaseline: true }
+      ],
+      screenshotResult: 'data:image/png;base64,QUJD',
+      calls: []
+    }
+    const device = makeFakeDevice(state)
+    // Three skips so multiple ticks can run without exhausting the brain
+    // script (which would yield no decisions and confuse downstream
+    // assertions).
+    const brain = makeFakeBrain([[{ type: 'skip' }], [{ type: 'skip' }], [{ type: 'skip' }]])
+    const hooks = makeFakeHooks()
+    const observed: Array<{ type: string; text?: string }> = []
+    const policy = makeOcrPolicy({
+      ocrEnabled: true,
+      sampleIntervalMs: 30_000,
+      observed
+    })
+    const ocr = makeFakeOcr(() => 'no match here')
+
+    // Hold the clock fixed so the second tick is well under 30s after the
+    // first OCR call.
+    const now = 1_000_000
+    const engine = new Engine(brain, device, hooks, undefined, undefined, policy, ocr, () => now)
+    const p = engine.start()
+    await vi.advanceTimersByTimeAsync(50)
+    // Allow several diff-driven re-entries.
+    await vi.advanceTimersByTimeAsync(15_000)
+    engine.stop()
+    await vi.advanceTimersByTimeAsync(2_000)
+    await p
+
+    // Despite multiple processCurrentChat invocations, OCR ran at most once
+    // because the injected clock didn't advance beyond the sampleIntervalMs.
+    expect(ocr.extractCalls.length).toBe(1)
   })
 
   it('falls back to legacy ad-hoc sleep on polling clicks when no policy is configured', async () => {

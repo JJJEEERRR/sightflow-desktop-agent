@@ -23,6 +23,7 @@ import { Engine } from '../core/engine'
 import { LocalHooks } from '../core/local-hooks'
 import { RPADevice } from '../core/rpa-device'
 import { VlmBrain, OpenAICompatProvider, type AgentBrain, type BrainConfig } from '../core/brain'
+import { TesseractOcrEngine, NullOcrEngine, type OcrEngine } from '../core/ocr'
 import type { AppType } from '../core/rpa/types'
 import {
   configureLogger,
@@ -444,18 +445,30 @@ app.whenReady().then(async () => {
       // buildEngine recreates Engine + RPADevice + LocalHooks but reuses the
       // existing brain and shared lifecycle. Used both for the initial start
       // and by the Watchdog for restarts.
+      //
+      // OCR is constructed per-engine (not shared across watchdog restarts):
+      // tesseract.js workers are cheap to recreate and we'd rather pay that
+      // cost than risk a stale worker leaking after a crash. Using
+      // `NullOcrEngine` when disabled keeps the engine's hot-path branch
+      // free of `undefined` checks while paying zero runtime cost (see
+      // ADR-0010).
       const buildEngine = (): Engine => {
         const localHooks = new LocalHooks()
         const device = new RPADevice()
         device.setAppType(config.appType || 'weixin')
         device.setApiKey(config.apiKey)
+        const ocrCfg = currentPolicy?.getConfig().ocr
+        const ocr: OcrEngine = ocrCfg?.enabled
+          ? new TesseractOcrEngine({ language: ocrCfg.language })
+          : new NullOcrEngine()
         const e = new Engine(
           currentBrain!,
           device,
           localHooks,
           onLog,
           sharedLifecycle!,
-          currentPolicy ?? undefined
+          currentPolicy ?? undefined,
+          ocr
         )
         e.setAppType(config.appType || 'weixin')
         return e

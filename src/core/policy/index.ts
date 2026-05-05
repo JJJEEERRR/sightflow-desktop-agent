@@ -2,6 +2,7 @@ export {
   AntiDetectionConfigSchema,
   CircuitBreakerConfigSchema,
   HumanizerConfigSchema,
+  OcrConfigSchema,
   RateLimiterConfigSchema,
   ScheduleConfigSchema,
   defaultAntiDetectionConfig,
@@ -10,6 +11,7 @@ export {
   type AntiDetectionConfig,
   type CircuitBreakerConfig,
   type HumanizerConfig,
+  type OcrConfig,
   type RateLimiterConfig,
   type ScheduleConfig
 } from './config'

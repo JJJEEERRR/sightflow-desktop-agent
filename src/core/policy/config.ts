@@ -94,13 +94,29 @@ export const CircuitBreakerConfigSchema = z.object({
 })
 export type CircuitBreakerConfig = z.infer<typeof CircuitBreakerConfigSchema>
 
+// ── OCR ────────────────────────────────────────────────────────────────────
+
+export const OcrConfigSchema = z.object({
+  /** Disabled by default. Tesseract.js downloads ~10MB of language data on
+   *  first use and adds a ~200-500ms latency per scan. Opt-in via the UI. */
+  enabled: z.boolean().default(false),
+  /** Minimum time between two OCR scans, milliseconds. Lower = more
+   *  responsive popup detection; higher = lower CPU. */
+  sampleIntervalMs: z.number().int().min(1_000).default(30_000),
+  /** Tesseract language packs. Use '+' to combine (chi_sim+eng covers
+   *  Simplified Chinese + English, the common WeChat surface). */
+  language: z.string().min(1).default('chi_sim+eng')
+})
+export type OcrConfig = z.infer<typeof OcrConfigSchema>
+
 // ── Top-level ──────────────────────────────────────────────────────────────
 
 export const AntiDetectionConfigSchema = z.object({
   humanizer: HumanizerConfigSchema.default({}),
   rateLimiter: RateLimiterConfigSchema.default({}),
   schedule: ScheduleConfigSchema.default({}),
-  circuitBreaker: CircuitBreakerConfigSchema.default({})
+  circuitBreaker: CircuitBreakerConfigSchema.default({}),
+  ocr: OcrConfigSchema.default({})
 })
 export type AntiDetectionConfig = z.infer<typeof AntiDetectionConfigSchema>
 

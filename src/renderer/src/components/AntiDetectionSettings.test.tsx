@@ -102,6 +102,11 @@ interface AntiDetectionConfigShape {
     screenshotFreezeMs: number
     bannedKeywords: string[]
   }
+  ocr: {
+    enabled: boolean
+    sampleIntervalMs: number
+    language: string
+  }
 }
 
 const DEFAULT_CONFIG: AntiDetectionConfigShape = {
@@ -137,6 +142,11 @@ const DEFAULT_CONFIG: AntiDetectionConfigShape = {
     duplicateReplyCount: 3,
     screenshotFreezeMs: 300000,
     bannedKeywords: ['账号异常', '冻结', '违规']
+  },
+  ocr: {
+    enabled: false,
+    sampleIntervalMs: 30000,
+    language: 'chi_sim+eng'
   }
 }
 
@@ -341,6 +351,28 @@ describe('AntiDetectionSettings — breaker banner', () => {
     // 2 snapshot calls: initial backfill + post-reset refetch.
     expect(channels.filter((c) => c === 'policy:snapshot').length).toBe(2)
     expect(onToast).toHaveBeenCalledWith('Breaker reset', 'success')
+  })
+})
+
+describe('AntiDetectionSettings — OCR section', () => {
+  it('renders the OCR section heading and toggles enabled', async () => {
+    installElectronMock((channel) => {
+      if (channel === 'policy:get') return DEFAULT_CONFIG
+      if (channel === 'policy:snapshot') return null
+      return null
+    })
+    const user = userEvent.setup()
+
+    render(<AntiDetectionSettings />)
+
+    await waitFor(() => {
+      expect(screen.getByText('OCR popup detection')).toBeInTheDocument()
+    })
+
+    const toggle = screen.getByTestId('ocr-enabled') as HTMLInputElement
+    expect(toggle.checked).toBe(false)
+    await user.click(toggle)
+    expect(toggle.checked).toBe(true)
   })
 })
 

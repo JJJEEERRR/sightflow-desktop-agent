@@ -1,9 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { Engine } from './engine'
-import type { AgentHooks, ReplyAction, MessageContext } from './hooks'
+import type { AgentHooks, ReplyAction } from './hooks'
 import type { DesktopDevice } from './device'
 import type { AppType } from './rpa/types'
 import { Lifecycle, type LifecycleEvent } from './runtime'
+import type { AgentBrain, BrainContext, BrainStream } from './brain'
 
 /**
  * Build an in-memory `DesktopDevice` whose behaviour can be programmed per
@@ -75,16 +76,11 @@ function makeFakeDevice(state: FakeDeviceState): DesktopDevice & {
  * a deterministic transcript.
  */
 function makeFakeHooks(
-  scripts: ReplyAction[][],
   options: { onEngineStart?: () => Promise<void>; onEngineStop?: () => Promise<void> } = {}
-): AgentHooks & { calls: string[]; replyCount: number } {
+): AgentHooks & { calls: string[] } {
   const calls: string[] = []
-  let replyCount = 0
   return {
     calls,
-    get replyCount() {
-      return replyCount
-    },
     onEngineStart: async () => {
       calls.push('onEngineStart')
       await options.onEngineStart?.()
@@ -93,18 +89,58 @@ function makeFakeHooks(
       calls.push('onEngineStop')
       await options.onEngineStop?.()
     },
-    getReply: async function* (ctx: MessageContext): AsyncIterable<ReplyAction> {
-      calls.push(`getReply(screenshot=${ctx.screenshot.slice(0, 20)})`)
-      const next = scripts[replyCount] ?? []
-      replyCount++
-      for (const action of next) yield action
-    },
     onActionComplete: (action, result) => {
       calls.push(`onActionComplete(${action.type}=${result.success})`)
     },
     onError: (err, phase) => {
       calls.push(`onError(${phase}:${err.message})`)
     }
+  }
+}
+
+/**
+ * Translate the legacy `ReplyAction` test fixtures (still expressive and
+ * widely used across these tests) into the Phase 2 `BrainStream` shape.
+ * `image` is dropped (engine no longer handles it; pre-Phase-2 it was a
+ * TODO no-op anyway).
+ */
+function replyActionToStream(action: ReplyAction): BrainStream {
+  switch (action.type) {
+    case 'text':
+      return { decision: { type: 'reply', text: action.content } }
+    case 'skip':
+      return { decision: { type: 'skip' } }
+    case 'thinking':
+      return { thinking: action.content }
+    case 'image':
+      return {} // dropped; existing tests don't exercise this branch
+  }
+}
+
+/**
+ * Drives `Engine.processCurrentChat` with a deterministic sequence of
+ * decisions. `scripts[0]` is consumed on the first `decide()` call,
+ * `scripts[1]` on the second, etc. Recording `calls` parallels the
+ * `makeFakeHooks` transcript so existing assertions keep working.
+ */
+function makeFakeBrain(
+  scripts: ReplyAction[][]
+): AgentBrain & { calls: string[]; decideCount: number } {
+  const calls: string[] = []
+  let decideCount = 0
+  return {
+    calls,
+    get decideCount() {
+      return decideCount
+    },
+    decide: async function* (ctx: BrainContext): AsyncIterable<BrainStream> {
+      calls.push(`decide(screenshot=${ctx.screenshot.slice(0, 20)})`)
+      const next = scripts[decideCount] ?? []
+      decideCount++
+      for (const action of next) yield replyActionToStream(action)
+    },
+    testConnection: async () => ({ success: true }),
+    updateConfig: () => {}
   }
 }
 
@@ -127,10 +163,11 @@ describe('Engine lifecycle — startup failures', () => {
       calls: []
     }
     const device = makeFakeDevice(state)
-    const hooks = makeFakeHooks([])
+    const brain = makeFakeBrain([])
+    const hooks = makeFakeHooks()
     const logs: Array<[string, string]> = []
 
-    const engine = new Engine(hooks, device, (type, content) => logs.push([type, content]))
+    const engine = new Engine(brain, device, hooks, (type, content) => logs.push([type, content]))
     await engine.start()
 
     expect(state.calls).toEqual(['measureLayout'])
@@ -157,9 +194,10 @@ describe('Engine main loop — single cycle', () => {
       calls: []
     }
     const device = makeFakeDevice(state)
-    const hooks = makeFakeHooks([[{ type: 'text', content: 'hi back' }]])
+    const brain = makeFakeBrain([[{ type: 'text', content: 'hi back' }]])
+    const hooks = makeFakeHooks()
 
-    const engine = new Engine(hooks, device)
+    const engine = new Engine(brain, device, hooks)
     const startPromise = engine.start()
 
     // Let measure + first reply cycle complete. The loop then enters
@@ -197,9 +235,10 @@ describe('Engine main loop — single cycle', () => {
       calls: []
     }
     const device = makeFakeDevice(state)
-    const hooks = makeFakeHooks([[{ type: 'skip' }]])
+    const brain = makeFakeBrain([[{ type: 'skip' }]])
+    const hooks = makeFakeHooks()
 
-    const engine = new Engine(hooks, device)
+    const engine = new Engine(brain, device, hooks)
     const p = engine.start()
     await vi.advanceTimersByTimeAsync(50)
     await vi.advanceTimersByTimeAsync(6000)
@@ -229,12 +268,13 @@ describe('Engine waitForNextUnread — diff channel', () => {
     }
     const device = makeFakeDevice(state)
     // Two reply cycles: first sends a message, second cycle (after diff) sends another.
-    const hooks = makeFakeHooks([
+    const brain = makeFakeBrain([
       [{ type: 'text', content: 'reply1' }],
       [{ type: 'text', content: 'reply2' }]
     ])
+    const hooks = makeFakeHooks()
 
-    const engine = new Engine(hooks, device)
+    const engine = new Engine(brain, device, hooks)
     const p = engine.start()
     // Allow many polling rounds to complete.
     await vi.advanceTimersByTimeAsync(50)
@@ -265,12 +305,13 @@ describe('Engine waitForNextUnread — unread red-dot channel', () => {
       calls: []
     }
     const device = makeFakeDevice(state)
-    const hooks = makeFakeHooks([
+    const brain = makeFakeBrain([
       [{ type: 'text', content: 'r1' }],
       [{ type: 'text', content: 'r2' }]
     ])
+    const hooks = makeFakeHooks()
 
-    const engine = new Engine(hooks, device)
+    const engine = new Engine(brain, device, hooks)
     const p = engine.start()
     await vi.advanceTimersByTimeAsync(50)
     await vi.advanceTimersByTimeAsync(15_000)
@@ -316,9 +357,10 @@ describe('Engine waitForNextUnread — unread red-dot channel', () => {
       calls: []
     }
     const device = makeFakeDevice(state)
-    const hooks = makeFakeHooks([[{ type: 'skip' }]])
+    const brain = makeFakeBrain([[{ type: 'skip' }]])
+    const hooks = makeFakeHooks()
 
-    const engine = new Engine(hooks, device)
+    const engine = new Engine(brain, device, hooks)
     const p = engine.start()
     await vi.advanceTimersByTimeAsync(50)
     await vi.advanceTimersByTimeAsync(60_000)
@@ -343,9 +385,10 @@ describe('Engine.executeAction', () => {
       calls: []
     }
     const device = makeFakeDevice(state)
-    const hooks = makeFakeHooks([[{ type: 'text', content: 'will fail' }]])
+    const brain = makeFakeBrain([[{ type: 'text', content: 'will fail' }]])
+    const hooks = makeFakeHooks()
 
-    const engine = new Engine(hooks, device)
+    const engine = new Engine(brain, device, hooks)
     const p = engine.start()
     await vi.advanceTimersByTimeAsync(50)
     await vi.advanceTimersByTimeAsync(6_000)
@@ -373,8 +416,9 @@ describe('Engine.setAppType', () => {
       calls: []
     }
     const device = makeFakeDevice(state)
-    const hooks = makeFakeHooks([])
-    const engine = new Engine(hooks, device)
+    const brain = makeFakeBrain([])
+    const hooks = makeFakeHooks()
+    const engine = new Engine(brain, device, hooks)
 
     engine.setAppType('wework')
     expect(state.calls).toContain('setAppType(wework)')
@@ -392,12 +436,13 @@ describe('Engine.lifecycle integration', () => {
       calls: []
     }
     const device = makeFakeDevice(state)
-    const hooks = makeFakeHooks([])
+    const brain = makeFakeBrain([])
+    const hooks = makeFakeHooks()
     const lifecycle = new Lifecycle()
     const events: LifecycleEvent[] = []
     lifecycle.subscribe((e) => events.push(e))
 
-    const engine = new Engine(hooks, device, undefined, lifecycle)
+    const engine = new Engine(brain, device, hooks, undefined, lifecycle)
     expect(lifecycle.getState()).toBe('idle')
 
     const p = engine.start()
@@ -424,12 +469,13 @@ describe('Engine.lifecycle integration', () => {
       calls: []
     }
     const device = makeFakeDevice(state)
-    const hooks = makeFakeHooks([])
+    const brain = makeFakeBrain([])
+    const hooks = makeFakeHooks()
     const lifecycle = new Lifecycle()
     const events: LifecycleEvent[] = []
     lifecycle.subscribe((e) => events.push(e))
 
-    const engine = new Engine(hooks, device, undefined, lifecycle)
+    const engine = new Engine(brain, device, hooks, undefined, lifecycle)
     await engine.start()
 
     expect(lifecycle.getState()).toBe('crashed')
@@ -448,9 +494,10 @@ describe('Engine.lifecycle integration', () => {
       calls: []
     }
     const device = makeFakeDevice(state)
-    const hooks = makeFakeHooks([])
+    const brain = makeFakeBrain([])
+    const hooks = makeFakeHooks()
     const lifecycle = new Lifecycle()
-    const engine = new Engine(hooks, device, undefined, lifecycle)
+    const engine = new Engine(brain, device, hooks, undefined, lifecycle)
 
     const p1 = engine.start()
     await vi.advanceTimersByTimeAsync(10)
@@ -461,5 +508,86 @@ describe('Engine.lifecycle integration', () => {
     engine.stop()
     await vi.advanceTimersByTimeAsync(10_000)
     await p1
+  })
+})
+
+describe('Engine.brain integration', () => {
+  it('routes BrainStream.thinking events through emitLog(thinking) before the decision lands', async () => {
+    const state: FakeDeviceState = {
+      measureLayoutResult: { success: true },
+      hasUnreadQueue: [{ hasUnread: false }],
+      isContactUnreadQueue: [],
+      hasChatAreaChangedQueue: [{ hasDiff: false, hasBaseline: true }],
+      screenshotResult: 'frame-A',
+      calls: []
+    }
+    const device = makeFakeDevice(state)
+
+    // A purpose-built brain that yields an explicit thinking step before the
+    // reply, so we can assert ordering against the engine's renderer log.
+    const customBrain: AgentBrain = {
+      decide: async function* (): AsyncIterable<BrainStream> {
+        yield { thinking: 'considering options...' }
+        yield { thinking: 'narrowing in...' }
+        yield { decision: { type: 'reply', text: 'final answer' } }
+      },
+      testConnection: async () => ({ success: true }),
+      updateConfig: () => {}
+    }
+    const hooks = makeFakeHooks()
+    const logs: Array<[string, string]> = []
+
+    const engine = new Engine(customBrain, device, hooks, (type, content) =>
+      logs.push([type, content])
+    )
+    const p = engine.start()
+    await vi.advanceTimersByTimeAsync(50)
+    await vi.advanceTimersByTimeAsync(6_000)
+    engine.stop()
+    await vi.advanceTimersByTimeAsync(6_000)
+    await p
+
+    const ordered = logs.map(([t, c]) => `${t}:${c}`)
+    const consideringIdx = ordered.findIndex((s) => s.includes('considering'))
+    const narrowingIdx = ordered.findIndex((s) => s.includes('narrowing'))
+    const replyIdx = ordered.findIndex((s) => s.startsWith('reply:'))
+    expect(consideringIdx).toBeGreaterThan(-1)
+    expect(narrowingIdx).toBeGreaterThan(consideringIdx)
+    expect(replyIdx).toBeGreaterThan(narrowingIdx)
+    expect(state.calls).toContain('sendMessage(final answer)')
+  })
+
+  it('passes the engine appType through BrainContext (post-setAppType)', async () => {
+    const state: FakeDeviceState = {
+      measureLayoutResult: { success: true },
+      hasUnreadQueue: [{ hasUnread: false }],
+      isContactUnreadQueue: [],
+      hasChatAreaChangedQueue: [{ hasDiff: false, hasBaseline: true }],
+      screenshotResult: 'frame',
+      calls: []
+    }
+    const device = makeFakeDevice(state)
+
+    const seenAppTypes: AppType[] = []
+    const customBrain: AgentBrain = {
+      decide: async function* (ctx: BrainContext): AsyncIterable<BrainStream> {
+        seenAppTypes.push(ctx.appType)
+        yield { decision: { type: 'skip', reason: 'noop' } }
+      },
+      testConnection: async () => ({ success: true }),
+      updateConfig: () => {}
+    }
+    const hooks = makeFakeHooks()
+    const engine = new Engine(customBrain, device, hooks)
+    engine.setAppType('wework')
+
+    const p = engine.start()
+    await vi.advanceTimersByTimeAsync(50)
+    await vi.advanceTimersByTimeAsync(6_000)
+    engine.stop()
+    await vi.advanceTimersByTimeAsync(6_000)
+    await p
+
+    expect(seenAppTypes[0]).toBe('wework')
   })
 })

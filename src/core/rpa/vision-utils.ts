@@ -242,8 +242,11 @@ export async function detectUnreadArea(
   try {
     // 1. 截图
     const screenshotResult = await captureWechatWindow(appType)
-    if (!screenshotResult.success || !screenshotResult.screenshotBase64) {
+    if (!screenshotResult.success) {
       return { success: false, error: screenshotResult.error || '截图失败' }
+    }
+    if (!screenshotResult.screenshotBase64) {
+      return { success: false, error: '截图失败' }
     }
 
     // 2. 获取窗口信息（用于坐标转换）
@@ -301,9 +304,9 @@ export async function detectUnreadArea(
     })
 
     return { success: true, chatEntranceArea, firstContact: firstContact || undefined }
-  } catch (error: any) {
+  } catch (error) {
     console.error('[VisionUtils] 检测失败:', error)
-    return { success: false, error: error?.message || String(error) }
+    return { success: false, error: error instanceof Error ? error.message : String(error) }
   }
 }
 
@@ -454,8 +457,11 @@ export async function detectWechatLayout(
 
     // 1. 截图
     const screenshotResult = await captureWechatWindow(appType)
-    if (!screenshotResult.success || !screenshotResult.screenshotBase64) {
+    if (!screenshotResult.success) {
       return { success: false, error: screenshotResult.error || '截图失败' }
+    }
+    if (!screenshotResult.screenshotBase64) {
+      return { success: false, error: '截图失败' }
     }
 
     // 2. 获取窗口信息
@@ -516,8 +522,8 @@ export async function detectWechatLayout(
     })
 
     return { success: true, searchInputBox, headerArea, chatMainArea }
-  } catch (error: any) {
+  } catch (error) {
     console.error('[VisionUtils] 布局检测失败:', error)
-    return { success: false, error: error?.message || String(error) }
+    return { success: false, error: error instanceof Error ? error.message : String(error) }
   }
 }

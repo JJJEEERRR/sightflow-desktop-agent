@@ -23,12 +23,12 @@ export class Engine {
     private onLog?: (type: string, content: string) => void
   ) {}
 
-  private emitLog(type: 'thinking' | 'reply' | 'skip' | 'error', content: string) {
+  private emitLog(type: 'thinking' | 'reply' | 'skip' | 'error', content: string): void {
     if (this.onLog) this.onLog(type, content)
     else console.log(`[Engine-${type}] ${content}`)
   }
 
-  async start() {
+  async start(): Promise<void> {
     this.running = true
     await this.hooks.onEngineStart?.()
 
@@ -75,13 +75,21 @@ export class Engine {
     await this.hooks.onEngineStop?.()
   }
 
-  stop() {
+  stop(): void {
     this.running = false
     this.device.clearChatBaseline()
   }
 
-  isRunning() {
+  isRunning(): boolean {
     return this.running
+  }
+
+  /**
+   * Allow external orchestrators (e.g. the main-process IPC handlers) to update
+   * the engine's target application type without reaching into private fields.
+   */
+  setAppType(appType: Parameters<DesktopDevice['setAppType']>[0]): void {
+    this.device.setAppType(appType)
   }
 
   // ── Step 3+4: 发图 → 回复 ──
@@ -89,7 +97,7 @@ export class Engine {
   /**
    * 处理当前对话：截图 → AI 分析 → RPA 执行回复 → 设置 diff baseline
    */
-  private async processCurrentChat() {
+  private async processCurrentChat(): Promise<void> {
     // 发图
     const screenshot = await this.device.screenshot()
     this.emitLog('thinking', '截图完成，请求 AI 分析...')
@@ -126,7 +134,7 @@ export class Engine {
    * 3. diff 无变化 → 检查红点
    * 4. 红点有未读 → 视觉点击切换联系人 → return
    */
-  private async waitForNextUnread() {
+  private async waitForNextUnread(): Promise<void> {
     while (this.running) {
       // 轮询间隔 3-5 秒
       await this.sleep(3000 + Math.random() * 2000)
@@ -262,7 +270,7 @@ export class Engine {
 
   // ── 执行动作 ──
 
-  private async executeAction(action: ReplyAction) {
+  private async executeAction(action: ReplyAction): Promise<void> {
     try {
       switch (action.type) {
         case 'text':
@@ -288,7 +296,10 @@ export class Engine {
     }
   }
 
-  private async executeExternalActions(params: { actions: ActionItem[]; targets?: string[] }) {
+  private async executeExternalActions(params: {
+    actions: ActionItem[]
+    targets?: string[]
+  }): Promise<void> {
     if (this.hooks.executeActions) {
       for await (const result of this.hooks.executeActions(params)) {
         console.log('[Engine] External action result:', result)
@@ -296,7 +307,7 @@ export class Engine {
     }
   }
 
-  private sleep(ms: number) {
+  private sleep(ms: number): Promise<void> {
     return new Promise((resolve) => setTimeout(resolve, ms))
   }
 }

@@ -57,8 +57,11 @@ export async function hasUnreadMessage(
 
     // 4. 局部截图
     const screenshotResult = await captureWechatWindow(appType, cropBounds)
-    if (!screenshotResult.success || !screenshotResult.screenshotBase64) {
+    if (!screenshotResult.success) {
       return { success: false, error: screenshotResult.error || '局部截图失败' }
+    }
+    if (!screenshotResult.screenshotBase64) {
+      return { success: false, error: '局部截图失败' }
     }
 
     // 5. 红点像素扫描（只扫第一象限=右上角）
@@ -85,9 +88,9 @@ export async function hasUnreadMessage(
       percentage,
       chatEntranceArea: unreadArea.chatEntranceArea
     }
-  } catch (error: any) {
+  } catch (error) {
     console.error('[HasUnread] Step 1 失败:', error)
-    return { success: false, error: error?.message || String(error) }
+    return { success: false, error: error instanceof Error ? error.message : String(error) }
   }
 }
 
@@ -248,9 +251,9 @@ export async function isChatContactUnread(
       percentage: lastPercentage,
       firstContact
     }
-  } catch (error: any) {
+  } catch (error) {
     console.error('[HasUnread] Step 2 失败:', error)
-    return { success: false, error: error?.message || String(error) }
+    return { success: false, error: error instanceof Error ? error.message : String(error) }
   }
 }
 

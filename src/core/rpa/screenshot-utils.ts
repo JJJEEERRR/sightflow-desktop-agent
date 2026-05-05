@@ -5,17 +5,57 @@ import { AppType } from './types'
 
 const IS_MAC = process.platform === 'darwin'
 
+interface Bounds {
+  x: number
+  y: number
+  width: number
+  height: number
+}
+
+interface DisplayInfo {
+  id: number
+  bounds: Bounds
+  scaleFactor: number
+}
+
 interface ScreenshotCache {
   screenshotBase64: string
   nativeImage: Electron.NativeImage
-  bounds: { x: number; y: number; width: number; height: number }
-  display: {
-    id: number
-    bounds: { x: number; y: number; width: number; height: number }
-    scaleFactor: number
-  }
+  bounds: Bounds
+  display: DisplayInfo
   timestamp: number
 }
+
+export interface CaptureResultSuccess {
+  success: true
+  screenshotBase64: string
+  nativeImage?: Electron.NativeImage
+  bounds: Bounds
+  display: DisplayInfo
+  timestamp?: number
+}
+
+export interface CaptureResultError {
+  success: false
+  error: string
+  display?: DisplayInfo
+}
+
+export type CaptureResult = CaptureResultSuccess | CaptureResultError
+
+export interface TakeScreenshotSuccess {
+  success: true
+  screenshot: string
+  bounds: Bounds
+  scaleFactor: number
+}
+
+export interface TakeScreenshotError {
+  success: false
+  error: string
+}
+
+export type TakeScreenshotResult = TakeScreenshotSuccess | TakeScreenshotError
 
 const screenshotCache = new Map<string, ScreenshotCache>()
 const screenshotPendingPromises = new Map<string, Promise<ScreenshotCache | null>>()
@@ -45,18 +85,22 @@ export function getChatContactAvatarBounds(): {
   return { x: 70, y: 64, width: 46, height: 68 }
 }
 
-export const takeWeChatScreenshot = async ({ wechatType = 'weixin' }: { wechatType: AppType }) => {
+export const takeWeChatScreenshot = async ({
+  wechatType = 'weixin'
+}: {
+  wechatType: AppType
+}): Promise<TakeScreenshotResult> => {
   try {
     const windowInfo = await getWindowInfo(wechatType, true)
     if (!windowInfo) return { success: false, error: '未找到应用窗口' }
     return {
       success: true,
-      screenshot: windowInfo.screenshot,
+      screenshot: windowInfo.screenshot ?? '',
       bounds: windowInfo.bounds,
       scaleFactor: windowInfo.scaleFactor
     }
-  } catch (error: any) {
-    return { success: false, error: error.message }
+  } catch (error) {
+    return { success: false, error: error instanceof Error ? error.message : String(error) }
   }
 }
 
@@ -92,8 +136,8 @@ export async function calculateRedDotPercentage(
 
 export async function captureWechatWindow(
   appType: AppType = 'weixin',
-  crop?: { x: number; y: number; width: number; height: number }
-): Promise<any> {
+  crop?: Bounds
+): Promise<CaptureResult> {
   try {
     const windowCoreResult = await getWechatWindowInfo(appType)
     if (!windowCoreResult) return { success: false, error: '未找到窗口' }
@@ -199,8 +243,8 @@ export async function captureWechatWindow(
       bounds: captureResult.bounds,
       display: captureResult.display
     }
-  } catch (err: any) {
-    return { success: false, error: err.message }
+  } catch (err) {
+    return { success: false, error: err instanceof Error ? err.message : String(err) }
   }
 }
 
@@ -248,7 +292,7 @@ export async function captureChatMainArea(appType: AppType): Promise<Electron.Na
 
     console.log('[captureChatMainArea] 截图结果无 nativeImage')
     return null
-  } catch (error: any) {
+  } catch (error) {
     console.error('[captureChatMainArea] 异常:', error)
     return null
   }

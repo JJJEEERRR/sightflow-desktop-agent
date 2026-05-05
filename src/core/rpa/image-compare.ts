@@ -13,7 +13,7 @@ import { PNG } from 'pngjs'
 const pixelmatch: typeof _pixelmatch =
   typeof _pixelmatch === 'function'
     ? _pixelmatch
-    : ((_pixelmatch as any).default as typeof _pixelmatch)
+    : (_pixelmatch as unknown as { default: typeof _pixelmatch }).default
 
 export interface CompareResult {
   /** 是否有变化 */

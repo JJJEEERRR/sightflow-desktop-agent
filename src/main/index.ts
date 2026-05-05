@@ -6,13 +6,27 @@ import { checkAndRequestPermissions } from './permission'
 import Store from 'electron-store'
 import { Engine } from '../core/engine'
 import { LocalHooks } from '../core/local-hooks'
-import { AIClient } from '../core/ai-client'
+import { AIClient, type AIClientConfig } from '../core/ai-client'
 import { RPADevice } from '../core/rpa-device'
-const StoreClass = typeof Store === 'function' ? Store : ((Store as any).default as typeof Store)
+import type { AppType } from '../core/rpa/types'
+
+// `electron-store` ships both CJS and ESM bundles; in some bundlers the import
+// arrives as `{ default: Store }`, in others as `Store` directly. This handles
+// both shapes without resorting to `any`.
+const StoreClass =
+  typeof Store === 'function' ? Store : (Store as unknown as { default: typeof Store }).default
 const settingsStore = new StoreClass({
   name: 'settings',
   defaults: { apiKey: '', model: '', baseURL: '', systemPrompt: '', locale: 'zh' }
 })
+
+interface EngineStartConfig {
+  apiKey: string
+  model?: string
+  baseURL?: string
+  systemPrompt?: string
+  appType?: AppType
+}
 
 let engine: Engine | null = null
 let localHooks: LocalHooks | null = null
@@ -83,7 +97,7 @@ app.whenReady().then(async () => {
     return settingsStore.get(key)
   })
 
-  ipcMain.handle('settings:set', async (_event, data: Record<string, any>) => {
+  ipcMain.handle('settings:set', async (_event, data: Record<string, unknown>) => {
     for (const [key, value] of Object.entries(data)) {
       settingsStore.set(key, value)
     }
@@ -91,7 +105,7 @@ app.whenReady().then(async () => {
   })
 
   // ── Engine 操控 ──
-  ipcMain.handle('engine:start', async (_event, config) => {
+  ipcMain.handle('engine:start', async (_event, config: EngineStartConfig) => {
     if (engine?.isRunning()) return { success: false, error: '引擎已在运行中' }
     try {
       localHooks = new LocalHooks({
@@ -112,13 +126,16 @@ app.whenReady().then(async () => {
         }
       })
 
-      engine.start().catch((err: any) => {
+      engine.start().catch((err) => {
         console.error('[Main] Engine loop error:', err)
       })
 
       return { success: true }
-    } catch (error: any) {
-      return { success: false, error: error?.message || String(error) }
+    } catch (error) {
+      return {
+        success: false,
+        error: error instanceof Error ? error.message : String(error)
+      }
     }
   })
 
@@ -132,21 +149,27 @@ app.whenReady().then(async () => {
     return { running: engine?.isRunning() ?? false }
   })
 
-  ipcMain.handle('engine:updateConfig', async (_event, config) => {
-    if (localHooks) {
-      localHooks.updateAIConfig(config)
-      if (engine && config.appType) {
-        ;(engine as any).device?.setAppType(config.appType)
+  ipcMain.handle(
+    'engine:updateConfig',
+    async (_event, config: Partial<AIClientConfig> & { appType?: AppType }) => {
+      if (localHooks) {
+        localHooks.updateAIConfig(config)
+        if (engine && config.appType) {
+          engine.setAppType(config.appType)
+        }
+        return { success: true }
       }
-      return { success: true }
+      return { success: false, error: '引擎未初始化' }
     }
-    return { success: false, error: '引擎未初始化' }
-  })
+  )
 
-  ipcMain.handle('engine:testConnection', async (_event, config) => {
-    const client = new AIClient(config)
-    return client.testConnection()
-  })
+  ipcMain.handle(
+    'engine:testConnection',
+    async (_event, config: Partial<AIClientConfig> & { apiKey: string }) => {
+      const client = new AIClient(config)
+      return client.testConnection()
+    }
+  )
 
   // IPC test
   ipcMain.on('ping', () => console.log('pong'))

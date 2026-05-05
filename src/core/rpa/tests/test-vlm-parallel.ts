@@ -2,7 +2,16 @@ import { AIClient } from '../../ai-client'
 import { detectUnreadArea } from '../vision-utils'
 import { AppType } from '../types'
 
-export async function runVlmParallelTest(apiKey: string, appType: AppType = 'weixin') {
+interface VlmParallelTestResult {
+  success: boolean
+  elapsed: string
+  error?: string
+}
+
+export async function runVlmParallelTest(
+  apiKey: string,
+  appType: AppType = 'weixin'
+): Promise<VlmParallelTestResult> {
   const aiClient = new AIClient({ apiKey })
 
   console.log('[Test] 单独调 detectUnreadArea，计时开始...')
@@ -12,10 +21,15 @@ export async function runVlmParallelTest(apiKey: string, appType: AppType = 'wei
     const elapsed = ((Date.now() - t) / 1000).toFixed(1)
     console.log(`[Test] detectUnreadArea ${result.success ? '✓' : '✗'} (${elapsed}s)`)
     if (!result.success) console.log('[Test] error:', result.error)
-    return { success: result.success, elapsed, error: result.error }
-  } catch (e: any) {
+    return {
+      success: result.success,
+      elapsed,
+      error: result.success ? undefined : result.error
+    }
+  } catch (e) {
     const elapsed = ((Date.now() - t) / 1000).toFixed(1)
-    console.error(`[Test] detectUnreadArea 异常 (${elapsed}s):`, e?.message)
-    return { success: false, elapsed, error: e?.message }
+    const message = e instanceof Error ? e.message : String(e)
+    console.error(`[Test] detectUnreadArea 异常 (${elapsed}s):`, message)
+    return { success: false, elapsed, error: message }
   }
 }

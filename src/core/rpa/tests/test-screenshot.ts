@@ -1,7 +1,7 @@
 import { RPADevice } from '../../rpa-device'
 import * as fs from 'fs'
 
-export async function runScreenshotTest() {
+export async function runScreenshotTest(): Promise<void> {
   console.log('[Test] Running screenshot atom...')
   const device = new RPADevice()
   device.setAppType('weixin')
@@ -11,7 +11,7 @@ export async function runScreenshotTest() {
     const base64Data = screenshotStr.replace(/^data:image\/\w+;base64,/, '')
     fs.writeFileSync('test-screenshot.png', Buffer.from(base64Data, 'base64'))
     console.log(`✅ Screenshot saved to test-screenshot.png (Size: ${screenshotStr.length})`)
-  } catch (err: any) {
+  } catch (err) {
     console.error('❌ Screenshot failed', err)
   }
 }

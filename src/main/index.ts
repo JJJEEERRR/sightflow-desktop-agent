@@ -1,9 +1,24 @@
-import { app, shell, BrowserWindow, ipcMain, desktopCapturer, powerSaveBlocker } from 'electron'
+import {
+  app,
+  shell,
+  BrowserWindow,
+  ipcMain,
+  desktopCapturer,
+  powerSaveBlocker,
+  safeStorage
+} from 'electron'
 import { join } from 'path'
 import { electronApp, optimizer, is } from '@electron-toolkit/utils'
 import icon from '../../resources/icon.png?asset'
 import { checkAndRequestPermissions } from './permission'
 import Store from 'electron-store'
+import {
+  SecureStore,
+  buildSettingsForRenderer,
+  readSettingForRenderer,
+  WRITABLE_SETTING_KEYS,
+  type KvStore
+} from './secure-store'
 import { Engine } from '../core/engine'
 import { LocalHooks } from '../core/local-hooks'
 import { RPADevice } from '../core/rpa-device'
@@ -76,6 +91,13 @@ let watchdog: Watchdog | null = null
 // (rate-limiter counters, breaker state must NOT reset across watchdog
 // restarts — that's the whole point of the breaker).
 let currentPolicy: AntiDetectionPolicy | null = null
+
+// SecureStore wraps `settingsStore` for at-rest encryption of the API key via
+// Electron's `safeStorage`. Constructed inside `app.whenReady()` because
+// `safeStorage` requires app initialization on Linux/macOS. Held at module
+// scope so all IPC handlers share the same instance (and the same one-time
+// "encryption unavailable" warning state).
+let secureStore: SecureStore | null = null
 
 // ── Observability boot ─────────────────────────────────────────────────────
 // Constructed at module load so anything that runs before app.whenReady() is
@@ -174,18 +196,53 @@ app.whenReady().then(async () => {
 
   ipcMain.on('ping', () => log.debug('pong'))
 
+  // ── SecureStore boot (must precede any settings:* handler that reads/writes apiKey) ──
+  // The cast goes through `unknown` because electron-store's strict generic
+  // signatures don't unify with our minimal KvStore shape, but the runtime
+  // contract (get / set / delete) is identical.
+  const settingsKv = settingsStore as unknown as KvStore
+  secureStore = new SecureStore({
+    store: settingsKv,
+    safeStorage,
+    onFallback: (reason) => log.warn('secure-store fallback', { reason })
+  })
+  // Transparently migrate any plaintext apiKey left over from previous
+  // versions. Idempotent — safe to run on every boot. The success info log
+  // is emitted from inside the wrapper so we don't double-log here.
+  secureStore.migrateLegacyApiKey()
+  const ss = secureStore
+
   // ── Settings 持久化 ──
+  // Both read handlers are thin wrappers around pure helpers in
+  // `secure-store.ts` — see that module for the apiKey/apiKeyEncrypted
+  // routing rules. Routing logic is unit-tested without booting IPC.
   ipcMain.handle('settings:getAll', async () => {
-    return settingsStore.store
+    return buildSettingsForRenderer(settingsStore.store as Record<string, unknown>, ss)
   })
 
   ipcMain.handle('settings:get', async (_event, key: string) => {
-    return settingsStore.get(key)
+    return readSettingForRenderer(key, ss, settingsKv)
   })
 
   ipcMain.handle('settings:set', async (_event, data: Record<string, unknown>) => {
-    for (const [key, value] of Object.entries(data)) {
-      settingsStore.set(key, value)
+    if ('apiKey' in data) {
+      const ak = data.apiKey
+      if (typeof ak === 'string') {
+        ss.setApiKey(ak)
+      } else if (ak === null || ak === undefined) {
+        ss.clearApiKey()
+      } else {
+        // A non-string apiKey from the renderer is almost certainly a bug.
+        // Drop it and warn rather than persisting `String(value)` garbage.
+        log.warn('settings:set rejected non-string apiKey', { type: typeof ak })
+      }
+    }
+    // Explicit allowlist (preferred over a rest-destructure / blocklist) so
+    // adding a new public setting is a deliberate action, not an accidental
+    // pass-through. `apiKey` and `apiKeyEncrypted` are deliberately excluded;
+    // the secure store is the only writer for those.
+    for (const k of WRITABLE_SETTING_KEYS) {
+      if (k in data) settingsStore.set(k, data[k])
     }
     return { success: true }
   })
@@ -480,7 +537,7 @@ app.whenReady().then(async () => {
 
   // ── 测试入口：VLM 并行 vs 串行 ──
   ipcMain.handle('test:vlm-parallel', async () => {
-    const apiKey = settingsStore.get('apiKey') as string
+    const apiKey = secureStore?.getApiKey() ?? ''
     if (!apiKey) return { error: '请先在设置中填写 API Key' }
     const { runVlmParallelTest } = await import('../core/rpa/tests/test-vlm-parallel')
     return await runVlmParallelTest(apiKey, 'weixin')

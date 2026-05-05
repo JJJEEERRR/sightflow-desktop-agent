@@ -509,6 +509,82 @@ describe('Engine.lifecycle integration', () => {
     await vi.advanceTimersByTimeAsync(10_000)
     await p1
   })
+
+  // ── Watchdog recovery handshake ──
+  // When the engine is started while the lifecycle is in `recovering` (i.e.
+  // a Watchdog has called `lifecycle.recover()` and is now telling us to
+  // come back online), the engine must NOT call `lifecycle.start()` again
+  // and MUST call `lifecycle.recovered()` once measureLayout succeeds.
+
+  it('on a Watchdog-driven restart (lifecycle in recovering), transitions recovering → running after measureLayout', async () => {
+    const state: FakeDeviceState = {
+      measureLayoutResult: { success: true },
+      hasUnreadQueue: [{ hasUnread: false }],
+      isContactUnreadQueue: [],
+      hasChatAreaChangedQueue: [],
+      screenshotResult: '',
+      calls: []
+    }
+    const device = makeFakeDevice(state)
+    const brain = makeFakeBrain([])
+    const hooks = makeFakeHooks()
+    const lifecycle = new Lifecycle()
+    // Hand-drive the lifecycle into 'recovering' the same way Watchdog would:
+    // start → crash → recover. After this, recover() returned true and the
+    // budget has 1 attempt logged.
+    lifecycle.start()
+    lifecycle.crash(new Error('synthetic'))
+    expect(lifecycle.recover()).toBe(true)
+    expect(lifecycle.getState()).toBe('recovering')
+
+    const events: LifecycleEvent[] = []
+    lifecycle.subscribe((e) => events.push(e))
+
+    const engine = new Engine(brain, device, hooks, undefined, lifecycle)
+    const p = engine.start()
+    await vi.advanceTimersByTimeAsync(50)
+    expect(lifecycle.getState()).toBe('running')
+
+    engine.stop()
+    await vi.advanceTimersByTimeAsync(10_000)
+    await p
+
+    const transitions = events.map((e) => `${e.from}->${e.to}`)
+    // Must include the recovered transition; must NOT include a duplicate
+    // idle->running.
+    expect(transitions).toContain('recovering->running')
+    expect(transitions).not.toContain('idle->running')
+  })
+
+  it('on a Watchdog-driven restart, a measureLayout failure crashes from recovering (not from running)', async () => {
+    const state: FakeDeviceState = {
+      measureLayoutResult: { success: false, error: 'no window after retry' },
+      hasUnreadQueue: [],
+      isContactUnreadQueue: [],
+      hasChatAreaChangedQueue: [],
+      screenshotResult: '',
+      calls: []
+    }
+    const device = makeFakeDevice(state)
+    const brain = makeFakeBrain([])
+    const hooks = makeFakeHooks()
+    const lifecycle = new Lifecycle()
+    lifecycle.start()
+    lifecycle.crash(new Error('first'))
+    lifecycle.recover()
+
+    const events: LifecycleEvent[] = []
+    lifecycle.subscribe((e) => events.push(e))
+
+    const engine = new Engine(brain, device, hooks, undefined, lifecycle)
+    await engine.start()
+
+    expect(lifecycle.getState()).toBe('crashed')
+    // The new crash should be sourced from `recovering`, proving the
+    // engine called crash() on the right starting state.
+    expect(events.map((e) => `${e.from}->${e.to}`)).toEqual(['recovering->crashed'])
+    expect(lifecycle.snapshot().lastError?.message).toBe('no window after retry')
+  })
 })
 
 describe('Engine.brain integration', () => {

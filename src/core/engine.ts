@@ -73,7 +73,13 @@ export class Engine {
   async start(): Promise<void> {
     if (this.running) return
     this.running = true
-    if (this.lifecycle.getState() === 'idle') {
+    // Capture the lifecycle state at entry so we can tell whether this is a
+    // fresh start (idle) or a Watchdog-driven recovery (recovering). The
+    // handshake matters: the Watchdog has already moved us to `recovering`,
+    // and we are responsible for transitioning back to `running` only once
+    // measureLayout actually succeeds.
+    const startState = this.lifecycle.getState()
+    if (startState === 'idle') {
       this.lifecycle.start()
     }
     await this.hooks.onEngineStart?.()
@@ -90,7 +96,10 @@ export class Engine {
       if (!measureResult.success) {
         const reason = measureResult.error || '布局测量失败'
         this.emitLog('error', `${reason}，引擎无法启动`)
-        if (this.lifecycle.getState() === 'running') {
+        // crash() is legal from both 'running' and 'recovering' so this
+        // works whether we got here via a fresh start or a watchdog retry.
+        const state = this.lifecycle.getState()
+        if (state === 'running' || state === 'recovering') {
           this.lifecycle.crash(new Error(reason))
         }
         this.running = false
@@ -99,6 +108,15 @@ export class Engine {
       }
 
       this.emitLog('thinking', '布局测量完成 ✓')
+
+      // Watchdog-driven recovery handshake: we entered start() in
+      // 'recovering' (the Watchdog called lifecycle.recover()). Now that
+      // bootstrap succeeded, declare ourselves back online. If the user
+      // stopped us mid-bootstrap we'll have moved to 'stopped' already
+      // and skip the transition.
+      if (startState === 'recovering' && this.lifecycle.getState() === 'recovering') {
+        this.lifecycle.recovered()
+      }
 
       // ── 主循环 ──
       while (this.running) {
@@ -121,7 +139,8 @@ export class Engine {
       const err = e instanceof Error ? e : new Error(String(e))
       this.emitLog('error', `引擎启动失败: ${err.message}`)
       this.hooks.onError?.(err, 'engine_start')
-      if (this.lifecycle.getState() === 'running') {
+      const state = this.lifecycle.getState()
+      if (state === 'running' || state === 'recovering') {
         this.lifecycle.crash(err)
       }
     } finally {

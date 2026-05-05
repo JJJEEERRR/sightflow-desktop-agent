@@ -17,6 +17,7 @@ import {
   getLogger,
   type LogRecord
 } from '../core/observability'
+import { Lifecycle, Watchdog } from '../core/runtime'
 import type { LifecycleEvent, LifecycleSnapshot } from '../core/runtime'
 
 // `electron-store` ships both CJS and ESM bundles; in some bundlers the import
@@ -41,6 +42,11 @@ let engine: Engine | null = null
 let currentBrain: AgentBrain | null = null
 let powerSaveBlockerId: number | null = null
 let unsubscribeLifecycle: (() => void) | null = null
+// One Lifecycle + one Watchdog per engine:start session. Held at module scope
+// so the Watchdog's restart closure can replace `engine` in place when the
+// agent loop crashes and is rebuilt.
+let sharedLifecycle: Lifecycle | null = null
+let watchdog: Watchdog | null = null
 
 // ── Observability boot ─────────────────────────────────────────────────────
 // Constructed at module load so anything that runs before app.whenReady() is
@@ -72,9 +78,10 @@ configureLogger({
 const log = getLogger('main')
 
 // ── Process-level safety nets ──────────────────────────────────────────────
-// In Phase 1 we *log* these and let the process keep running — Phase 2 will
-// add a Watchdog/auto-restart. Without this, an unhandled promise rejection
-// in a deep RPA leaf would silently lose state.
+// We log these and let the process keep running. The Watchdog handles
+// in-process recovery for the engine loop; these handlers exist so that
+// rejections leaking out of any other surface (settings, IPC handlers,
+// etc.) don't take the whole main process down silently.
 process.on('unhandledRejection', (reason) => {
   log.error('unhandledRejection', { err: reason })
 })
@@ -171,29 +178,42 @@ app.whenReady().then(async () => {
           : {})
       })
 
-      const localHooks = new LocalHooks()
-      const device = new RPADevice()
-      device.setAppType(config.appType || 'weixin')
-      device.setApiKey(config.apiKey)
+      // Brand-new Lifecycle for this session. The Watchdog needs a single
+      // Lifecycle that persists across engine reconstructions so the restart
+      // budget accumulates correctly.
+      sharedLifecycle = new Lifecycle()
+
       const mainWindow = BrowserWindow.getAllWindows()[0]
-      engine = new Engine(currentBrain, device, localHooks, (type, content) => {
+      const onLog = (type: string, content: string): void => {
         if (mainWindow && !mainWindow.isDestroyed()) {
           mainWindow.webContents.send('engine:log', { type, content })
         }
-      })
-      // App-type stays in the engine so BrainContext.appType is correct from
-      // tick 1 (before any setAppType IPC roundtrip).
-      engine.setAppType(config.appType || 'weixin')
+      }
+
+      // buildEngine recreates Engine + RPADevice + LocalHooks but reuses the
+      // existing brain and shared lifecycle. Used both for the initial start
+      // and by the Watchdog for restarts.
+      const buildEngine = (): Engine => {
+        const localHooks = new LocalHooks()
+        const device = new RPADevice()
+        device.setAppType(config.appType || 'weixin')
+        device.setApiKey(config.apiKey)
+        const e = new Engine(currentBrain!, device, localHooks, onLog, sharedLifecycle!)
+        e.setAppType(config.appType || 'weixin')
+        return e
+      }
+
+      engine = buildEngine()
 
       // Subscribe to lifecycle transitions: forward to renderer over a
       // dedicated channel, and gate the powerSaveBlocker on the running state.
       unsubscribeLifecycle?.()
-      unsubscribeLifecycle = engine.getLifecycle().subscribe((event: LifecycleEvent) => {
+      unsubscribeLifecycle = sharedLifecycle.subscribe((event: LifecycleEvent) => {
         const win = BrowserWindow.getAllWindows()[0]
         if (win && !win.isDestroyed()) {
           win.webContents.send('engine:state', {
             event,
-            snapshot: engine?.getLifecycle().snapshot()
+            snapshot: sharedLifecycle?.snapshot()
           })
         }
 
@@ -202,14 +222,55 @@ app.whenReady().then(async () => {
             powerSaveBlockerId = powerSaveBlocker.start('prevent-app-suspension')
             log.info('powerSaveBlocker started', { id: powerSaveBlockerId })
           }
-        } else if (event.to === 'stopped' || event.to === 'crashed') {
+        } else if (event.to === 'stopped') {
           if (powerSaveBlockerId !== null) {
             powerSaveBlocker.stop(powerSaveBlockerId)
             log.info('powerSaveBlocker stopped', { id: powerSaveBlockerId })
             powerSaveBlockerId = null
           }
+        } else if (event.to === 'crashed') {
+          // While we hold the blocker through transient crashes (so the
+          // Watchdog can recover before the OS suspends us), we MUST release
+          // it once the Watchdog gives up — otherwise a flapping engine
+          // would leak the blocker indefinitely. Defer the check by a tick
+          // so the Watchdog has had a chance to run its post-crash
+          // accounting on this same event.
+          setImmediate(() => {
+            if (
+              watchdog?.getStats().givenUp &&
+              sharedLifecycle?.getState() === 'crashed' &&
+              powerSaveBlockerId !== null
+            ) {
+              powerSaveBlocker.stop(powerSaveBlockerId)
+              log.info('powerSaveBlocker stopped (watchdog gave up)', {
+                id: powerSaveBlockerId
+              })
+              powerSaveBlockerId = null
+            }
+          })
         }
       })
+
+      // Watchdog: monitors the shared lifecycle, rebuilds engine on crash.
+      watchdog?.stop()
+      watchdog = new Watchdog({
+        lifecycle: sharedLifecycle,
+        restart: async (): Promise<void> => {
+          log.info('Watchdog restart() invoked; rebuilding engine')
+          // Tear down the previous engine instance fully. `engine.stop()`
+          // is a no-op on the FSM if state isn't running/paused/crashed
+          // (and at this point we are in `recovering`), so this only flips
+          // the internal `running` boolean.
+          engine?.stop()
+          engine = buildEngine()
+          // Kick off the loop. The engine itself transitions
+          // recovering → running once measureLayout succeeds.
+          engine.start().catch((err) => {
+            log.error('Engine loop error after restart', { err })
+          })
+        }
+      })
+      watchdog.start()
 
       engine.start().catch((err) => {
         log.error('Engine loop error', { err })
@@ -227,7 +288,19 @@ app.whenReady().then(async () => {
 
   ipcMain.handle('engine:stop', async () => {
     if (!engine?.isRunning()) return { success: false, error: '引擎未运行' }
+    // Stop the watchdog first so a graceful shutdown is not interpreted as
+    // a crash to recover from.
+    watchdog?.stop()
+    watchdog = null
     engine.stop()
+    // Release the powerSaveBlocker explicitly here too. The lifecycle
+    // listener also does this on the `stopped` event, but stop() races with
+    // the loop tail and the listener firing — calling it idempotently is
+    // safe and guarantees the blocker is gone before the IPC reply.
+    if (powerSaveBlockerId !== null) {
+      powerSaveBlocker.stop(powerSaveBlockerId)
+      powerSaveBlockerId = null
+    }
     return { success: true }
   })
 
@@ -236,9 +309,11 @@ app.whenReady().then(async () => {
   })
 
   // Returns the latest lifecycle snapshot. Renderer can poll this on connect
-  // to reconcile its UI before the next 'engine:state' event arrives.
+  // to reconcile its UI before the next 'engine:state' event arrives. Reads
+  // from the shared Lifecycle (not engine.getLifecycle()) so the value
+  // persists across Watchdog-driven engine reconstructions.
   ipcMain.handle('engine:lifecycle', async (): Promise<LifecycleSnapshot | null> => {
-    return engine?.getLifecycle().snapshot() ?? null
+    return sharedLifecycle?.snapshot() ?? null
   })
 
   // Returns the most recent N log records. Used by the future Diagnostics tab

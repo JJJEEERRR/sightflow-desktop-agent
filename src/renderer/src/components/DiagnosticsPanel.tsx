@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState, JSX } from 'react'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { t } from '../i18n'
+import { ipc } from '../lib/ipc'
 import type {
   LifecycleEvent,
   LifecycleSnapshot,
@@ -10,6 +12,8 @@ import type {
 
 const MAX_LOG_RECORDS = 500
 const MAX_TRANSITIONS = 30
+const LOGS_RECENT_LIMIT = 200
+const LOGS_QUERY_KEY = ['logs:recent', LOGS_RECENT_LIMIT] as const
 
 const LEVEL_OPTIONS: ReadonlyArray<LogLevel | 'all'> = [
   'all',
@@ -29,10 +33,17 @@ interface DiagnosticsPanelProps {
  * Diagnostics view. Shows lifecycle snapshot + live logs + recent
  * transitions, all driven by IPC channels established in Phase 1
  * (`engine:lifecycle`, `logs:recent`, `engine:log-record`, `engine:state`).
+ *
+ * As of Phase 5 PR1 the `logs:recent` ring-buffer pull is served by
+ * `useQuery` (with a 1.5s `refetchInterval` as belt-and-suspenders for the
+ * push-channel feed). Live `engine:log-record` events route into the
+ * react-query cache via `setQueryData` so a single source of truth holds
+ * the rendered list. Lifecycle + transitions remain in local state for
+ * PR1; they migrate in PR2.
  */
 export function DiagnosticsPanel({ onToast }: DiagnosticsPanelProps): JSX.Element {
+  const queryClient = useQueryClient()
   const [snapshot, setSnapshot] = useState<LifecycleSnapshot | null>(null)
-  const [logs, setLogs] = useState<LogRecord[]>([])
   const [transitions, setTransitions] = useState<LifecycleEvent[]>([])
   const [levelFilter, setLevelFilter] = useState<LogLevel | 'all'>('all')
   const [phaseFilter, setPhaseFilter] = useState<string>('all')
@@ -40,38 +51,56 @@ export function DiagnosticsPanel({ onToast }: DiagnosticsPanelProps): JSX.Elemen
 
   const logStreamRef = useRef<HTMLDivElement>(null)
 
-  // Backfill from the ring buffer + current snapshot on first paint. Push
-  // channels take over from there.
+  // ── Logs (react-query) ───────────────────────────────────────────────
+  // Polling every 1.5s gives a backstop in case a push event is missed
+  // (e.g. main process restart while the renderer stays open). The 5-second
+  // staleTime in the global QueryClient is deliberately overridden to 0
+  // here so the polling actually round-trips.
+  const { data: logs = [] } = useQuery<LogRecord[]>({
+    queryKey: LOGS_QUERY_KEY,
+    queryFn: async () => {
+      const result = await ipc.invoke<LogRecord[] | undefined>('logs:recent', LOGS_RECENT_LIMIT)
+      return Array.isArray(result) ? result : []
+    },
+    refetchInterval: 1500,
+    staleTime: 0
+  })
+
+  // ── One-shot lifecycle backfill ──────────────────────────────────────
+  // Lifecycle stays in local state for PR1; PR2 moves it onto useQuery as
+  // well. We backfill once and let the engine:state push subscriber take
+  // over from there.
   useEffect(() => {
     let cancelled = false
     void (async (): Promise<void> => {
-      const [recent, lifecycle] = await Promise.all([
-        window.electron?.invoke<LogRecord[] | undefined>('logs:recent', 200) ?? [],
-        window.electron?.invoke<LifecycleSnapshot | null>('engine:lifecycle') ?? null
-      ])
-      if (cancelled) return
-      if (Array.isArray(recent)) setLogs(recent)
-      if (lifecycle) setSnapshot(lifecycle)
+      try {
+        const lifecycle = await ipc.invoke<LifecycleSnapshot | null>('engine:lifecycle')
+        if (cancelled) return
+        if (lifecycle) setSnapshot(lifecycle)
+      } catch {
+        // Defensive: a missing handler shouldn't crash the page.
+      }
     })()
     return (): void => {
       cancelled = true
     }
   }, [])
 
-  // Live log records.
+  // ── Live log records → react-query cache ─────────────────────────────
   useEffect(() => {
     const cleanup = window.electron?.on('engine:log-record', (...args) => {
       const record = args[0] as LogRecord | undefined
       if (!record) return
-      setLogs((prev) => {
-        const next = prev.length >= MAX_LOG_RECORDS ? prev.slice(-MAX_LOG_RECORDS + 1) : prev
+      queryClient.setQueryData<LogRecord[]>(LOGS_QUERY_KEY, (prev) => {
+        const base = prev ?? []
+        const next = base.length >= MAX_LOG_RECORDS ? base.slice(-MAX_LOG_RECORDS + 1) : base
         return [...next, record]
       })
     })
     return cleanup
-  }, [])
+  }, [queryClient])
 
-  // Live lifecycle transitions.
+  // ── Live lifecycle transitions ───────────────────────────────────────
   useEffect(() => {
     const cleanup = window.electron?.on('engine:state', (...args) => {
       const payload = args[0] as LifecycleStatePayload | undefined
@@ -138,7 +167,7 @@ export function DiagnosticsPanel({ onToast }: DiagnosticsPanelProps): JSX.Elemen
     if (isExporting) return
     setIsExporting(true)
     try {
-      const result = await window.electron?.invoke<
+      const result = await ipc.invoke<
         { success: true; path: string; sizeBytes: number } | { success: false; error: string }
       >('diag:export', { includeLogs: true, daysBack: 14 })
       if (result?.success === true) {

@@ -45,3 +45,19 @@ export interface LifecycleStatePayload {
   event: LifecycleEvent
   snapshot: LifecycleSnapshot
 }
+
+/** Which Windows IM the agent drives. Persisted in `electron-store`. */
+export type AppKind = 'weixin' | 'wework'
+
+/**
+ * Renderer-side mirror of the persisted settings shape served by the
+ * `settings:getAll` IPC handler. All fields optional to match the main-side
+ * partial-load semantics (a freshly-installed app may have no fields yet).
+ */
+export interface AppSettings {
+  apiKey?: string
+  model?: string
+  baseURL?: string
+  systemPrompt?: string
+  appType?: AppKind
+}

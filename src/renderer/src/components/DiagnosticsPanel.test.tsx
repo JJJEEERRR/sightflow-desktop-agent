@@ -3,11 +3,12 @@
  */
 import '@testing-library/jest-dom/vitest'
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
-import { cleanup, render, screen, waitFor } from '@testing-library/react'
+import { cleanup, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 
 import { DiagnosticsPanel } from './DiagnosticsPanel'
 import { setLocale } from '../i18n'
+import { renderWithProviders } from '../test-utils'
 import type { LifecycleStatePayload, LogRecord } from '../types'
 
 vi.mock('../assets/logo.png', () => ({ default: 'logo.png' }))
@@ -39,7 +40,7 @@ interface MockElectron {
 /**
  * Installs a window.electron mock that supports both invoke (request/response)
  * and on (push channel) flows. The returned `emit` fires every listener
- * registered for a given channel — that's how the tests can simulate the main
+ * registered for a given channel ??that's how the tests can simulate the main
  * process pushing engine:log-record / engine:state events.
  */
 function installElectronMock(
@@ -91,14 +92,14 @@ const SAMPLE_LOG_RECORD: LogRecord = {
   msg: 'Tick complete'
 }
 
-describe('DiagnosticsPanel — initial render', () => {
+describe('DiagnosticsPanel ??initial render', () => {
   it('shows an idle pill and empty placeholders when there is no data yet', async () => {
     installElectronMock((channel) => {
       if (channel === 'engine:lifecycle') return null
       if (channel === 'logs:recent') return []
       return null
     })
-    render(<DiagnosticsPanel />)
+    renderWithProviders(<DiagnosticsPanel />)
 
     // The lifecycle card falls back to an "idle" pill when snapshot is null.
     expect(screen.getAllByText('idle').length).toBeGreaterThan(0)
@@ -113,7 +114,7 @@ describe('DiagnosticsPanel — initial render', () => {
       return null
     })
 
-    render(<DiagnosticsPanel />)
+    renderWithProviders(<DiagnosticsPanel />)
 
     await waitFor(() => {
       expect(screen.getByText('Tick complete')).toBeInTheDocument()
@@ -126,7 +127,7 @@ describe('DiagnosticsPanel — initial render', () => {
   })
 })
 
-describe('DiagnosticsPanel — live IPC streams', () => {
+describe('DiagnosticsPanel ??live IPC streams', () => {
   it('appends incoming engine:log-record events to the log stream', async () => {
     const electron = installElectronMock((channel) => {
       if (channel === 'engine:lifecycle') return null
@@ -134,7 +135,7 @@ describe('DiagnosticsPanel — live IPC streams', () => {
       return null
     })
 
-    render(<DiagnosticsPanel />)
+    renderWithProviders(<DiagnosticsPanel />)
 
     // Wait for the backfill effect to settle so the empty placeholder is up.
     await waitFor(() => {
@@ -162,7 +163,7 @@ describe('DiagnosticsPanel — live IPC streams', () => {
       return null
     })
 
-    render(<DiagnosticsPanel />)
+    renderWithProviders(<DiagnosticsPanel />)
 
     await waitFor(() => {
       expect(screen.getByText('No transitions yet')).toBeInTheDocument()
@@ -182,7 +183,7 @@ describe('DiagnosticsPanel — live IPC streams', () => {
   })
 })
 
-describe('DiagnosticsPanel — filters', () => {
+describe('DiagnosticsPanel ??filters', () => {
   it('filters logs by level when the level dropdown changes', async () => {
     const electron = installElectronMock((channel) => {
       if (channel === 'engine:lifecycle') return null
@@ -194,7 +195,7 @@ describe('DiagnosticsPanel — filters', () => {
       return null
     })
     const user = userEvent.setup()
-    render(<DiagnosticsPanel />)
+    renderWithProviders(<DiagnosticsPanel />)
 
     await waitFor(() => {
       expect(screen.getByText('info-msg')).toBeInTheDocument()
@@ -208,14 +209,17 @@ describe('DiagnosticsPanel — filters', () => {
       expect(screen.queryByText('info-msg')).not.toBeInTheDocument()
       expect(screen.getByText('error-msg')).toBeInTheDocument()
     })
-    // Sanity: backfill happened exactly once even after filtering.
+    // Sanity: at least one logs:recent fetch occurred. Phase 5 PR1 swapped
+    // the one-shot useEffect backfill for `useQuery` with a 1.5s
+    // refetchInterval, so a long test run could see more than one call ?
+    // we only care that the channel was hit, not the exact count.
     expect(
       (electron.invoke.mock.calls as unknown[][]).filter((c) => c[0] === 'logs:recent').length
-    ).toBe(1)
+    ).toBeGreaterThanOrEqual(1)
   })
 })
 
-describe('DiagnosticsPanel — export', () => {
+describe('DiagnosticsPanel ??export', () => {
   it('serializes the current state to a Blob and triggers a download', async () => {
     installElectronMock((channel) => {
       if (channel === 'engine:lifecycle') return SAMPLE_LIFECYCLE.snapshot
@@ -223,7 +227,7 @@ describe('DiagnosticsPanel — export', () => {
       return null
     })
 
-    // jsdom does not implement createObjectURL/revokeObjectURL — install plain
+    // jsdom does not implement createObjectURL/revokeObjectURL ??install plain
     // mocks (not vi.spyOn) so we can assert the bundle wiring without needing
     // the real APIs.
     const createObjectURLSpy = vi.fn((_blob: Blob): string => 'blob:fake-url')
@@ -243,7 +247,7 @@ describe('DiagnosticsPanel — export', () => {
 
     const onToast = vi.fn()
     const user = userEvent.setup()
-    render(<DiagnosticsPanel onToast={onToast} />)
+    renderWithProviders(<DiagnosticsPanel onToast={onToast} />)
 
     // Wait for backfill so the bundle has actual content.
     await waitFor(() => {
@@ -272,7 +276,7 @@ describe('DiagnosticsPanel — export', () => {
   })
 })
 
-describe('DiagnosticsPanel — diag:export IPC', () => {
+describe('DiagnosticsPanel ??diag:export IPC', () => {
   /**
    * Helper that wires `installElectronMock` for a typical happy-path
    * backfill plus a configurable `diag:export` response (eager or deferred).
@@ -290,7 +294,7 @@ describe('DiagnosticsPanel — diag:export IPC', () => {
 
   it('renders the diag:export button with the expected label', async () => {
     installWithDiagExport(() => null)
-    render(<DiagnosticsPanel />)
+    renderWithProviders(<DiagnosticsPanel />)
 
     // The button uses its visible text content as the accessible name.
     expect(screen.getByRole('button', { name: 'Export diagnostics' })).toBeInTheDocument()
@@ -308,7 +312,7 @@ describe('DiagnosticsPanel — diag:export IPC', () => {
 
     const onToast = vi.fn()
     const user = userEvent.setup()
-    render(<DiagnosticsPanel onToast={onToast} />)
+    renderWithProviders(<DiagnosticsPanel onToast={onToast} />)
 
     await user.click(screen.getByRole('button', { name: 'Export diagnostics' }))
 
@@ -334,7 +338,7 @@ describe('DiagnosticsPanel — diag:export IPC', () => {
 
     const onToast = vi.fn()
     const user = userEvent.setup()
-    render(<DiagnosticsPanel onToast={onToast} />)
+    renderWithProviders(<DiagnosticsPanel onToast={onToast} />)
 
     await user.click(screen.getByRole('button', { name: 'Export diagnostics' }))
 
@@ -357,7 +361,7 @@ describe('DiagnosticsPanel — diag:export IPC', () => {
 
     const onToast = vi.fn()
     const user = userEvent.setup()
-    render(<DiagnosticsPanel onToast={onToast} />)
+    renderWithProviders(<DiagnosticsPanel onToast={onToast} />)
 
     const btn = screen.getByRole('button', { name: 'Export diagnostics' }) as HTMLButtonElement
     expect(btn).not.toBeDisabled()
@@ -369,7 +373,7 @@ describe('DiagnosticsPanel — diag:export IPC', () => {
     await waitFor(() => {
       expect(btn).toBeDisabled()
     })
-    expect(btn).toHaveTextContent('Exporting…')
+    expect(btn).toHaveTextContent('Exporting\u2026')
 
     resolveExport({ success: true, path: '/tmp/diag.zip', sizeBytes: 1 })
 

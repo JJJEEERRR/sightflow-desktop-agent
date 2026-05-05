@@ -2,6 +2,7 @@ import { useState, useCallback, useRef, useEffect, JSX } from 'react'
 import { t, type TranslationKey } from './i18n'
 import logoUrl from './assets/logo.png'
 import { DiagnosticsPanel } from './components/DiagnosticsPanel'
+import { AntiDetectionSettings } from './components/AntiDetectionSettings'
 import './index.css'
 
 // ─── Types ───
@@ -12,7 +13,7 @@ interface LogEntry {
 }
 
 type EngineStatus = 'idle' | 'running' | 'error'
-type View = 'control' | 'settings' | 'diagnostics'
+type View = 'control' | 'settings' | 'diagnostics' | 'antiDetection'
 type AppKind = 'weixin' | 'wework'
 
 interface AppSettings {
@@ -114,6 +115,8 @@ function App(): JSX.Element {
         <img src={logoUrl} alt="SightFlow" className="app-logo" />
         {view === 'diagnostics' ? (
           <span className="app-header-title">{t('diag.title')}</span>
+        ) : view === 'antiDetection' ? (
+          <span className="app-header-title">{t('policy.title')}</span>
         ) : null}
       </header>
 
@@ -121,7 +124,12 @@ function App(): JSX.Element {
         {view === 'control' ? (
           <ControlPanel status={status} setStatus={setStatus} />
         ) : view === 'settings' ? (
-          <SettingsPanel />
+          <SettingsPanel onNavigatePolicy={(): void => setView('antiDetection')} />
+        ) : view === 'antiDetection' ? (
+          <AntiDetectionSettings
+            onToast={showToast}
+            onNavigateDiagnostics={(): void => setView('diagnostics')}
+          />
         ) : (
           <DiagnosticsPanel onToast={showToast} />
         )}
@@ -284,7 +292,7 @@ function BottomBar({
 }
 
 // ─── Settings Panel ───
-function SettingsPanel(): JSX.Element {
+function SettingsPanel({ onNavigatePolicy }: { onNavigatePolicy: () => void }): JSX.Element {
   const [apiKey, setApiKey] = useState('')
   const [model, setModel] = useState('doubao-seed-2-0-lite-260215')
   const [baseURL, setBaseURL] = useState('')
@@ -421,6 +429,20 @@ function SettingsPanel(): JSX.Element {
           </button>
           <button className="btn btn-primary" onClick={handleSave} style={{ flex: 1 }}>
             {t('settings.save')}
+          </button>
+        </div>
+      </div>
+
+      <div className="card">
+        <div className="card-title">{t('policy.title')}</div>
+        <div className="form-actions">
+          <button
+            className="btn btn-secondary"
+            onClick={onNavigatePolicy}
+            style={{ flex: 1 }}
+            data-testid="open-anti-detection"
+          >
+            {t('policy.openSettings')}
           </button>
         </div>
       </div>

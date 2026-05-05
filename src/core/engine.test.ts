@@ -870,4 +870,151 @@ describe('Engine.policy integration (Phase 3)', () => {
     // failure was an RPA failure, not an AI failure.
     expect(observed).toContain('aiSuccess')
   })
+
+  it('emits screenshotHash signals: same screenshot → same hash, different → different', async () => {
+    // Two ticks back-to-back. The first tick screenshots 'frame-A', the second
+    // screenshots 'frame-B' (controlled by mutating screenshotResult between
+    // ticks via the unread-driven loop entry).
+    const state: FakeDeviceState = {
+      measureLayoutResult: { success: true },
+      hasUnreadQueue: [{ hasUnread: false }, { hasUnread: false }],
+      isContactUnreadQueue: [],
+      // Two diffs in a row so the loop re-enters processCurrentChat twice.
+      hasChatAreaChangedQueue: [
+        { hasDiff: true, hasBaseline: true },
+        { hasDiff: true, hasBaseline: true },
+        { hasDiff: false, hasBaseline: true }
+      ],
+      screenshotResult: 'frame-A',
+      calls: []
+    }
+    const device = makeFakeDevice(state)
+    const brain = makeFakeBrain([[{ type: 'skip' }], [{ type: 'skip' }]])
+    const hooks = makeFakeHooks()
+
+    const hashes: string[] = []
+    const policy = {
+      beforeReply: async () => ({ proceed: true as const }),
+      beforeAction: async () => ({}),
+      afterAction: async () => {},
+      observe: (signal: { type: string; hash?: string }) => {
+        if (signal.type === 'screenshotHash' && signal.hash) hashes.push(signal.hash)
+      },
+      resetBreaker: () => {},
+      snapshot: () => ({}) as never,
+      updateConfig: () => {},
+      getConfig: () => ({}) as never
+    } as unknown as import('./policy').AntiDetectionPolicy
+
+    const engine = new Engine(brain, device, hooks, undefined, undefined, policy)
+    const p = engine.start()
+    await vi.advanceTimersByTimeAsync(50)
+    // First tick captured; flip the screenshot before the next tick fires.
+    state.screenshotResult = 'frame-B'
+    await vi.advanceTimersByTimeAsync(15_000)
+    engine.stop()
+    await vi.advanceTimersByTimeAsync(2_000)
+    await p
+
+    expect(hashes.length).toBeGreaterThanOrEqual(2)
+    // Both hashes must be valid sha256 hex.
+    for (const h of hashes) expect(h).toMatch(/^[0-9a-f]{64}$/)
+    // First and last differ because we changed screenshotResult mid-run.
+    expect(hashes[0]).not.toBe(hashes[hashes.length - 1])
+  })
+
+  it('routes polling-loop clicks (red dot, contact) through policy.beforeAction/afterAction', async () => {
+    const state: FakeDeviceState = {
+      measureLayoutResult: { success: true },
+      hasUnreadQueue: [
+        {
+          hasUnread: true,
+          chatEntranceArea: { bbox: [0, 0, 10, 10], coordinates: [50, 60] }
+        },
+        { hasUnread: false }
+      ],
+      isContactUnreadQueue: [{ isUnread: true, firstContactCoords: [70, 80] }],
+      hasChatAreaChangedQueue: [{ hasDiff: false, hasBaseline: true }],
+      screenshotResult: 'frame-poll',
+      calls: []
+    }
+    const device = makeFakeDevice(state)
+    const brain = makeFakeBrain([[{ type: 'skip' }]])
+    const hooks = makeFakeHooks()
+
+    const beforeActions: Array<{ type: string; coords?: [number, number] }> = []
+    const afterActions: Array<{ type: string; success: boolean }> = []
+    const policy = {
+      beforeReply: async () => ({ proceed: true as const }),
+      beforeAction: async (a: { type: string; coords?: [number, number] }) => {
+        beforeActions.push(a)
+        return {}
+      },
+      afterAction: async (a: { type: string }, outcome: { success: boolean }): Promise<void> => {
+        afterActions.push({ type: a.type, success: outcome.success })
+      },
+      observe: () => {},
+      resetBreaker: () => {},
+      snapshot: () => ({}) as never,
+      updateConfig: () => {},
+      getConfig: () => ({}) as never
+    } as unknown as import('./policy').AntiDetectionPolicy
+
+    const engine = new Engine(brain, device, hooks, undefined, undefined, policy)
+    const p = engine.start()
+    await vi.advanceTimersByTimeAsync(50)
+    await vi.advanceTimersByTimeAsync(15_000)
+    engine.stop()
+    await vi.advanceTimersByTimeAsync(2_000)
+    await p
+
+    // Two click hops happen in waitForNextUnread: red-dot then contact.
+    const clickActions = beforeActions.filter((a) => a.type === 'click')
+    expect(clickActions.length).toBeGreaterThanOrEqual(2)
+    const coords = clickActions.map((a) => a.coords)
+    expect(coords).toEqual(
+      expect.arrayContaining<[number, number] | undefined>([
+        [50, 60],
+        [70, 80]
+      ])
+    )
+    // After each click, an afterAction(click, success: true) must follow.
+    const clickAfters = afterActions.filter((a) => a.type === 'click')
+    expect(clickAfters.length).toBeGreaterThanOrEqual(2)
+    expect(clickAfters.every((a) => a.success === true)).toBe(true)
+  })
+
+  it('falls back to legacy ad-hoc sleep on polling clicks when no policy is configured', async () => {
+    // Without a policy, the engine still does the click but uses the legacy
+    // jittered sleep — confirming we did NOT regress no-policy fixtures.
+    const state: FakeDeviceState = {
+      measureLayoutResult: { success: true },
+      hasUnreadQueue: [
+        {
+          hasUnread: true,
+          chatEntranceArea: { bbox: [0, 0, 10, 10], coordinates: [33, 44] }
+        },
+        { hasUnread: false }
+      ],
+      isContactUnreadQueue: [{ isUnread: true, firstContactCoords: [55, 66] }],
+      hasChatAreaChangedQueue: [{ hasDiff: false, hasBaseline: true }],
+      screenshotResult: 'frame-no-policy',
+      calls: []
+    }
+    const device = makeFakeDevice(state)
+    const brain = makeFakeBrain([[{ type: 'skip' }]])
+    const hooks = makeFakeHooks()
+
+    const engine = new Engine(brain, device, hooks)
+    const p = engine.start()
+    await vi.advanceTimersByTimeAsync(50)
+    await vi.advanceTimersByTimeAsync(15_000)
+    engine.stop()
+    await vi.advanceTimersByTimeAsync(2_000)
+    await p
+
+    // The actual device methods still ran.
+    expect(state.calls).toContain('activeUnreadByClick(33,44)')
+    expect(state.calls).toContain('clickUnreadContact(55,66)')
+  })
 })

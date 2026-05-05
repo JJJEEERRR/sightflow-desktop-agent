@@ -900,3 +900,61 @@ textarea.form-input {
   display: flex;
   gap: 8px;
 }
+
+/* ─── Anti-detection settings ─── */
+.policy-checkbox-row {
+  display: flex;
+  align-items: center;
+}
+
+.policy-checkbox-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--text-secondary);
+  cursor: pointer;
+  user-select: none;
+}
+
+.policy-checkbox-label input[type='checkbox'] {
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+
+.policy-range-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.policy-range-input {
+  flex: 1;
+  min-width: 0;
+}
+
+.policy-range-sep {
+  font-size: 11px;
+  color: var(--text-muted);
+  flex-shrink: 0;
+}
+
+.policy-error {
+  color: var(--error);
+}
+
+.policy-breaker-banner {
+  border-color: rgba(248, 113, 113, 0.25);
+  background: var(--error-bg);
+}
+
+.policy-breaker-title {
+  color: var(--error);
+}
+
+.policy-breaker-reason {
+  font-size: 12px;
+  color: var(--text-primary);
+  margin-bottom: 12px;
+  font-family: var(--font-mono);
+}

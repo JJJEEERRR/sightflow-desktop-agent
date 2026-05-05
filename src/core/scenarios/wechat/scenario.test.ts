@@ -8,12 +8,27 @@
 // Baseline` / `clearChatBaseline` / `execute` / `waitForNextChat`).
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { Jimp } from 'jimp'
 import { WechatScenario } from './scenario'
 import type { Scenario, ScenarioHelpers } from '../types'
 import type { DesktopDevice } from '../../device'
 import type { AgentHooks } from '../../hooks'
 import type { AppType } from '../../rpa/types'
-import type { AntiDetectionPolicy } from '../../policy'
+import type { ActionDescriptor, AntiDetectionPolicy } from '../../policy'
+
+/**
+ * Build a deterministic PNG data URL of the given size and uniform color.
+ * Used by `getContactId` tests so the resulting hash is stable across runs.
+ */
+async function makePngDataUrl(
+  width: number,
+  height: number,
+  color: number = 0xff0000ff
+): Promise<string> {
+  const img = new Jimp({ width, height, color })
+  const buf = await img.getBuffer('image/png')
+  return `data:image/png;base64,${buf.toString('base64')}`
+}
 
 interface FakeDeviceState {
   measureLayoutResult: { success: boolean; error?: string }
@@ -239,6 +254,116 @@ describe('WechatScenario.execute', () => {
 
     expect(state.calls).toEqual([])
     expect(recorder.emitted[0]).toEqual(['skip', '跳过：not for me'])
+  })
+
+  it('reply: threads helpers.contactId into policy.beforeAction / afterAction', async () => {
+    const state = emptyDeviceState()
+    const device = makeFakeDevice(state)
+    const scenario = new WechatScenario(device)
+
+    const beforeSeen: Array<ActionDescriptor> = []
+    const afterSeen: Array<ActionDescriptor> = []
+    const policy = {
+      beforeAction: async (a: ActionDescriptor) => {
+        beforeSeen.push(a)
+        return {}
+      },
+      afterAction: async (a: ActionDescriptor, _outcome: { success: boolean }) => {
+        afterSeen.push(a)
+      }
+    } as unknown as AntiDetectionPolicy
+    const recorder = makeHelpers({ policy })
+    recorder.helpers.contactId = 'deadbeefcafe1234'
+
+    await scenario.execute({ type: 'reply', text: 'hello' }, recorder.helpers)
+
+    expect(beforeSeen).toHaveLength(1)
+    expect(beforeSeen[0]).toEqual({
+      type: 'reply',
+      text: 'hello',
+      contactId: 'deadbeefcafe1234'
+    })
+    expect(afterSeen).toHaveLength(1)
+    expect(afterSeen[0]).toEqual({
+      type: 'reply',
+      text: 'hello',
+      contactId: 'deadbeefcafe1234'
+    })
+  })
+
+  it('reply: with no helpers.contactId, descriptors carry contactId:undefined (per-contact gate skips)', async () => {
+    const state = emptyDeviceState()
+    const device = makeFakeDevice(state)
+    const scenario = new WechatScenario(device)
+
+    const beforeSeen: Array<ActionDescriptor> = []
+    const policy = {
+      beforeAction: async (a: ActionDescriptor) => {
+        beforeSeen.push(a)
+        return {}
+      },
+      afterAction: async () => {}
+    } as unknown as AntiDetectionPolicy
+    const recorder = makeHelpers({ policy })
+    // Intentionally NOT setting recorder.helpers.contactId.
+
+    await scenario.execute({ type: 'reply', text: 'hi' }, recorder.helpers)
+
+    expect(beforeSeen).toHaveLength(1)
+    expect(beforeSeen[0]).toEqual({ type: 'reply', text: 'hi', contactId: undefined })
+  })
+})
+
+describe('WechatScenario.getContactId', () => {
+  it('returns a 16-character lowercase hex string for a non-empty PNG screenshot', async () => {
+    const state = emptyDeviceState()
+    const device = makeFakeDevice(state)
+    const scenario = new WechatScenario(device)
+    const screenshot = await makePngDataUrl(120, 200)
+
+    const id = await scenario.getContactId?.(screenshot)
+
+    expect(id).toBeDefined()
+    expect(id).toMatch(/^[0-9a-f]{16}$/)
+  })
+
+  it('returns the SAME id for two identical screenshots (stability)', async () => {
+    const state = emptyDeviceState()
+    const device = makeFakeDevice(state)
+    const scenario = new WechatScenario(device)
+    const screenshot = await makePngDataUrl(120, 200, 0x336699ff)
+
+    const a = await scenario.getContactId?.(screenshot)
+    const b = await scenario.getContactId?.(screenshot)
+
+    expect(a).toBe(b)
+    expect(a).toMatch(/^[0-9a-f]{16}$/)
+  })
+
+  it('returns DIFFERENT ids for screenshots with different header pixels', async () => {
+    const state = emptyDeviceState()
+    const device = makeFakeDevice(state)
+    const scenario = new WechatScenario(device)
+
+    // Two PNGs with different uniform colors → header strip pixels differ
+    // → SHA-256 of those bytes differs.
+    const a = await scenario.getContactId?.(await makePngDataUrl(120, 200, 0xff0000ff))
+    const b = await scenario.getContactId?.(await makePngDataUrl(120, 200, 0x00ff00ff))
+
+    expect(a).toMatch(/^[0-9a-f]{16}$/)
+    expect(b).toMatch(/^[0-9a-f]{16}$/)
+    expect(a).not.toBe(b)
+  })
+
+  it('returns undefined on malformed input (does not throw)', async () => {
+    const state = emptyDeviceState()
+    const device = makeFakeDevice(state)
+    const scenario = new WechatScenario(device)
+
+    // Random base64 garbage that is NOT a valid PNG.
+    const id = await scenario.getContactId?.('data:image/png;base64,not-a-real-png-payload')
+
+    expect(id).toBeUndefined()
   })
 })
 

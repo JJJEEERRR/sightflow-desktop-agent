@@ -81,6 +81,20 @@ export interface Scenario {
    * Optional cleanup at `Engine.stop()`. Defensive — must be no-throw.
    */
   dispose?(): Promise<void>
+
+  /**
+   * Derive a stable, opaque identifier for the currently-open chat
+   * (i.e. "who is the user replying to right now"). Used by the engine
+   * to thread per-contact rate-limiting through the policy gate.
+   *
+   * Returning `undefined` is supported and means "I don't know" — the
+   * engine will then skip per-contact gates and fall back to global
+   * limits only. This is the safe default; never throw.
+   *
+   * Implementations SHOULD be cheap (< ~5ms) and consistent across
+   * ticks for the same chat.
+   */
+  getContactId?(screenshot: string): Promise<string | undefined>
 }
 
 /**
@@ -96,4 +110,10 @@ export interface ScenarioHelpers {
   policy?: AntiDetectionPolicy
   /** Lifecycle callbacks (onActionComplete / onError). Always defined; fields are optional. */
   hooks: AgentHooks
+  /**
+   * Per-tick contact identifier (whatever `Scenario.getContactId` returned
+   * earlier in this tick). Forwarded by the scenario to `policy.afterAction`
+   * so the rate limiter records the send under the right contact.
+   */
+  contactId?: string
 }
